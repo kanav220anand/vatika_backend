@@ -1,0 +1,59 @@
+services:
+  # FastAPI Backend
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: plantsitter-api
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGO_URI=mongodb://mongo:27017
+      - MONGO_DB_NAME=plantsitter
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-super-secret-key-change-me}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - DEBUG=true
+    volumes:
+      - .:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    depends_on:
+      - mongo
+    networks:
+      - plantsitter-network
+
+  # MongoDB Database
+  mongo:
+    image: mongo:7
+    container_name: plantsitter-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - plantsitter-network
+
+  # MongoDB Express (Optional - for database UI)
+  mongo-express:
+    image: mongo-express:latest
+    container_name: plantsitter-mongo-express
+    ports:
+      - "8081:8081"
+    environment:
+      - ME_CONFIG_MONGODB_URL=mongodb://mongo:27017
+      - ME_CONFIG_BASICAUTH=false
+    depends_on:
+      - mongo
+    networks:
+      - plantsitter-network
+    profiles:
+      - tools  # Only starts with: docker-compose --profile tools up
+
+volumes:
+  mongo-data:
+
+networks:
+  plantsitter-network:
+    driver: bridge
+
