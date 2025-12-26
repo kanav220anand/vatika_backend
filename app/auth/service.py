@@ -12,6 +12,7 @@ from app.core.config import get_settings
 from app.core.database import Database
 from app.core.exceptions import BadRequestException, UnauthorizedException, NotFoundException
 from app.auth.models import UserCreate, UserResponse, TokenResponse
+from app.achievements.service import AchievementService
 
 settings = get_settings()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -202,14 +203,21 @@ class AuthService:
                 "google_id": google_user["google_id"],
                 "profile_picture": google_user.get("picture"),
                 "onboarding_status": "never_shown",
-                "total_achievement_score": 0,
+                "total_achievement_score": 5,  # Welcome bonus
                 "created_at": datetime.utcnow(),
             }
             
             result = await users.insert_one(user_doc)
             user_id = str(result.inserted_id)
             
+            # Auto-unlock early_adopter achievement for new signups
+            await AchievementService.unlock_achievement(user_id, "early_adopter")
+            
             token = cls.create_access_token(user_id, google_user["email"])
+            
+            # Use actual score (5 welcome bonus)
+            initial_score = 5
+            level_info = await cls.calculate_level(initial_score)
             
             user_response = UserResponse(
                 id=user_id,
@@ -220,9 +228,9 @@ class AuthService:
                 auth_provider="google",
                 profile_picture=google_user.get("picture"),
                 onboarding_status="never_shown",
-                total_achievement_score=0,
-                level=(await cls.calculate_level(0))[0],
-                title=(await cls.calculate_level(0))[1],
+                total_achievement_score=initial_score,
+                level=level_info[0],
+                title=level_info[1],
                 created_at=user_doc["created_at"],
             )
             
@@ -253,15 +261,22 @@ class AuthService:
             "balcony_orientation": user_data.balcony_orientation,
             "auth_provider": "email",
             "onboarding_status": "never_shown",
-            "total_achievement_score": 0,
+            "total_achievement_score": 5,  # Welcome bonus
             "created_at": datetime.utcnow(),
         }
         
         result = await users.insert_one(user_doc)
         user_id = str(result.inserted_id)
         
+        # Auto-unlock early_adopter achievement for new signups
+        await AchievementService.unlock_achievement(user_id, "early_adopter")
+        
         # Generate token
         token = cls.create_access_token(user_id, user_data.email)
+        
+        # Use actual score (5 welcome bonus)
+        initial_score = 5
+        level_info = await cls.calculate_level(initial_score)
         
         user_response = UserResponse(
             id=user_id,
@@ -271,9 +286,9 @@ class AuthService:
             balcony_orientation=user_data.balcony_orientation,
             auth_provider="email",
             onboarding_status="never_shown",
-            total_achievement_score=0,
-            level=(await cls.calculate_level(0))[0],
-            title=(await cls.calculate_level(0))[1],
+            total_achievement_score=initial_score,
+            level=level_info[0],
+            title=level_info[1],
             created_at=user_doc["created_at"],
         )
         
