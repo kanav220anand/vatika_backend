@@ -3,6 +3,7 @@ MongoDB database connection and utilities.
 """
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
+import certifi
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -17,7 +18,11 @@ class Database:
     @classmethod
     async def connect(cls):
         """Connect to MongoDB."""
-        cls.client = AsyncIOMotorClient(settings.MONGO_URI)
+        # Use certifi for SSL certificates to avoid handshake errors on some systems (especially macOS)
+        cls.client = AsyncIOMotorClient(
+            settings.MONGO_URI,
+            tlsCAFile=certifi.where()
+        )
         cls.db = cls.client[settings.MONGO_DB_NAME]
         
         # Create indexes
