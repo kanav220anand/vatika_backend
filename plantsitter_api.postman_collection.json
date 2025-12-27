@@ -1,0 +1,491 @@
+{
+    "info": {
+        "_postman_id": "e44d5c12-349f-4321-ba81-123456789abc",
+        "name": "Plantsitter API",
+        "description": "# Plantsitter API Documentation\n\nWelcome to the Plantsitter Backend API! This collection contains all the necessary endpoints to interact with the system.\n\n## Getting Started\n\n1. **Environment**: Ensure the `base_url` variable is set to your server address (e.g., `http://<ELASTIC_IP>:8000`).\n2. **Authentication**: Most endpoints require authentication. \n    - Use the `Auth / Login` request first.\n    - The collection is configured to **automatically** save the `access_token` from the login response to your environment variables.\n    - All other requests automatically use `Bearer {{access_token}}` for authorization.\n\n## Structure\n\n- **Auth**: User registration, login, and profile management.\n- **Plants**: Core plant analysis, detection, and collection management.\n- **Weather**: City-based weather alerts and plant care tips.\n- **Achievements**: Gamification system stats and unlocking logic.",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "item": [
+        {
+            "name": "Auth",
+            "description": "Endpoints for user authentication and profile management.",
+            "item": [
+                {
+                    "name": "Register",
+                    "request": {
+                        "method": "POST",
+                        "header": [],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"email\": \"newuser@example.com\",\n    \"password\": \"securepassword123\",\n    \"name\": \"New Gardener\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/auth/register",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "auth",
+                                "register"
+                            ]
+                        },
+                        "description": "Start here! Creates a new user account. \n\n**Note**: Returns an access token so you can start using the app immediately."
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Login",
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "// Automatically save the token for future requests",
+                                    "var jsonData = pm.response.json();",
+                                    "if (jsonData.access_token) {",
+                                    "    pm.environment.set(\"access_token\", jsonData.access_token);",
+                                    "    console.log(\"Login Successful: Access Token updated automatically.\");",
+                                    "}"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ],
+                    "request": {
+                        "method": "POST",
+                        "header": [],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"email\": \"test@example.com\",\n    \"password\": \"password123\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/auth/login",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "auth",
+                                "login"
+                            ]
+                        },
+                        "description": "Authenticates a user and returns a JWT token.\n\n**Automation**: This request contains a visualizer script that automatically extracts the `access_token` from the response and saves it to your Environment variables. You do NOT need to copy-paste the token manually."
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Get Profile",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}",
+                                "type": "text"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{base_url}}/auth/me",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "auth",
+                                "me"
+                            ]
+                        },
+                        "description": "Returns the currently logged-in user's profile details."
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Update Profile",
+                    "request": {
+                        "method": "PATCH",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}",
+                                "type": "text"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"city\": \"Mumbai\",\n    \"balcony_orientation\": \"North-East\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/auth/me",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "auth",
+                                "me"
+                            ]
+                        },
+                        "description": "Updates profile fields. Useful for setting the 'City' to enable weather alerts."
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Plants",
+            "description": "Core functionality for plant management and AI analysis.",
+            "item": [
+                {
+                    "name": "Analyze Plant (Image)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}",
+                                "type": "text"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"image_base64\": \"/9j/4AAQSkZJRg... (Paste a real Base64 string here)\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/plants/analyze",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "plants",
+                                "analyze"
+                            ]
+                        },
+                        "description": "Send a Base64 encoded image string to get AI-powered identification and health analysis."
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Save Plant to Collection",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}",
+                                "type": "text"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"plant_id\": \"monstera_deliciosa\",\n    \"scientific_name\": \"Monstera deliciosa\",\n    \"common_name\": \"Swiss Cheese Plant\",\n    \"confidence\": 0.95,\n    \"health_status\": \"healthy\",\n    \"image_url\": \"https://example.com/plant.jpg\",\n    \"care_schedule\": {\n        \"water_frequency\": {\n            \"summer\": \"weekly\",\n            \"winter\": \"biweekly\",\n            \"monsoon\": \"weekly\"\n        },\n        \"light_preference\": \"bright_indirect\",\n        \"fertilizer_frequency\": \"monthly\"\n    }\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        },
+                        "url": {
+                            "raw": "{{base_url}}/plants",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "plants"
+                            ]
+                        },
+                        "description": "After analysis, use this endpoint to save the plant to the user's personal garden."
+                    },
+                    "response": []
+                },
+                {
+                    "name": "List User Plants",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}",
+                                "type": "text"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{base_url}}/plants",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "plants"
+                            ]
+                        },
+                        "description": "Get a list of all plants in the user's garden."
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Get Specific Plant",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}",
+                                "type": "text"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{base_url}}/plants/:plant_id",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "plants",
+                                ":plant_id"
+                            ],
+                            "variable": [
+                                {
+                                    "key": "plant_id",
+                                    "value": "ENTER_PLANT_ID_HERE",
+                                    "description": "The unique ID (e.g. object ID) of the plant"
+                                }
+                            ]
+                        },
+                        "description": "Get detailed info for a single plant by its ID."
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Mark Plant as Watered",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}",
+                                "type": "text"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{base_url}}/plants/:plant_id/water",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "plants",
+                                ":plant_id",
+                                "water"
+                            ],
+                            "variable": [
+                                {
+                                    "key": "plant_id",
+                                    "value": "ENTER_PLANT_ID_HERE"
+                                }
+                            ]
+                        },
+                        "description": "Log a watering event. Updates the 'last_watered' timestamp and contributes to watering streak achievements."
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Search Knowledge Base",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/plants/search?q=snake",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "plants",
+                                "search"
+                            ],
+                            "query": [
+                                {
+                                    "key": "q",
+                                    "value": "snake",
+                                    "description": "Search query (min 2 chars)"
+                                }
+                            ]
+                        },
+                        "description": "Search the global database for plant species information."
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Weather",
+            "description": "Weather alerts and location-based plant tips.",
+            "item": [
+                {
+                    "name": "Get Weather Alerts (Specific City)",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{base_url}}/weather/alerts/Mumbai",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "weather",
+                                "alerts",
+                                "Mumbai"
+                            ]
+                        },
+                        "description": "Public endpoint to check alerts for any supported Indian city."
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Get My Weather Alerts",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}",
+                                "type": "text"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{base_url}}/weather/alerts",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "weather",
+                                "alerts"
+                            ]
+                        },
+                        "description": "Checks alerts for the user's registered city. Requires user to have updated their profile with a city."
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Achievements",
+            "description": "Gamification endpoints.",
+            "item": [
+                {
+                    "name": "List All Achievements",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}",
+                                "type": "text"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{base_url}}/achievements",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "achievements"
+                            ]
+                        },
+                        "description": "Lists all available achievements and shows which ones the user has unlocked."
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Check & Unlock (Sync)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}",
+                                "type": "text"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{base_url}}/achievements/check",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "achievements",
+                                "check"
+                            ]
+                        },
+                        "description": "Trigger a check to see if pending actions (like watering streak) now qualify for an achievement unlock."
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Get User Stats",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{access_token}}",
+                                "type": "text"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{base_url}}/achievements/stats",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "achievements",
+                                "stats"
+                            ]
+                        },
+                        "description": "Get raw statistics: total waterings, plants owned, successful health checks, etc."
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Health Check",
+            "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                    "raw": "{{base_url}}",
+                    "host": [
+                        "{{base_url}}"
+                    ],
+                    "path": []
+                },
+                "description": "Simple ping to check if the server is running."
+            },
+            "response": []
+        }
+    ],
+    "variable": [
+        {
+            "key": "base_url",
+            "value": "http://localhost:8000"
+        },
+        {
+            "key": "access_token",
+            "value": ""
+        }
+    ]
+}
