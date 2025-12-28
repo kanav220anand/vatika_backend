@@ -57,8 +57,8 @@ Optimized for Indian conditions:
 
     """,
     lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url="/api/v1/vatika/docs",
+    redoc_url="/api/v1/vatika/redoc",
 )
 
 # CORS middleware
@@ -71,12 +71,12 @@ app.add_middleware(
 )
 
 # Include routers
-app.include_router(auth_router, prefix="/api/v1")
-app.include_router(plants_router, prefix="/api/v1")
-app.include_router(weather_router, prefix="/api/v1")
-app.include_router(notifications_router, prefix="/api/v1")
-app.include_router(achievements_router, prefix="/api/v1")
-app.include_router(gamification_router)
+app.include_router(auth_router, prefix="/api/v1/vatika")
+app.include_router(plants_router, prefix="/api/v1/vatika")
+app.include_router(weather_router, prefix="/api/v1/vatika")
+app.include_router(notifications_router, prefix="/api/v1/vatika")
+app.include_router(achievements_router, prefix="/api/v1/vatika")
+app.include_router(gamification_router, prefix="/api/v1/vatika")
 
 
 @app.get("/", tags=["Health"])
