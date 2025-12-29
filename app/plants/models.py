@@ -27,7 +27,8 @@ class CareSchedule(BaseModel):
 
 class PlantAnalysisRequest(BaseModel):
     """Request schema for plant analysis."""
-    image_base64: str = Field(..., description="Base64 encoded plant image")
+    image_base64: Optional[str] = Field(None, description="Base64 encoded plant image")
+    image_url: Optional[str] = Field(None, description="S3 Key or URL of plant image")
 
 
 class PlantAnalysisResponse(BaseModel):
@@ -94,7 +95,9 @@ class PlantBoundary(BaseModel):
 class MultiPlantAnalysisRequest(BaseModel):
     """Request for analyzing image/video with multiple plants."""
     image_base64: Optional[str] = Field(None, description="Base64 encoded image")
+    image_url: Optional[str] = Field(None, description="S3 Key or URL of image")
     video_base64: Optional[str] = Field(None, description="Base64 encoded video")
+    video_url: Optional[str] = Field(None, description="S3 Key or URL of video")
     video_mime_type: Optional[str] = Field(
         None, 
         description="MIME type for video (video/mp4, video/quicktime, etc.)"
@@ -117,10 +120,15 @@ class MultiPlantDetectionResponse(BaseModel):
 
 class PlantThumbnailAnalysisRequest(BaseModel):
     """Request to analyze a specific plant from thumbnails."""
-    thumbnail_base64: str = Field(..., description="Base64 encoded plant thumbnail")
+    thumbnail_base64: Optional[str] = Field(None, description="Base64 encoded plant thumbnail")
+    thumbnail_url: Optional[str] = Field(None, description="S3 Key or URL of thumbnail")
     context_image_base64: Optional[str] = Field(
         None, 
         description="Full image for additional context"
+    )
+    context_image_url: Optional[str] = Field(
+        None, 
+        description="S3 Key or URL of context image"
     )
 
 

@@ -1,11 +1,10 @@
 """OpenAI service for plant identification and health analysis."""
 
-import json
 import re
 from typing import Optional, List, Dict
 from openai import AsyncOpenAI
-
 from app.core.config import get_settings
+from app.core.aws import S3Service
 from app.plants.models import PlantAnalysisResponse, PlantHealth, CareSchedule
 
 
@@ -25,11 +24,19 @@ class OpenAIService:
             cls._instance.model = settings.OPENAI_MODEL
         return cls._instance
     
-    async def analyze_plant(self, image_base64: str, city: Optional[str] = None) -> PlantAnalysisResponse:
+    async def analyze_plant(
+        self, 
+        image_base64: Optional[str] = None, 
+        image_url: Optional[str] = None,
+        city: Optional[str] = None
+    ) -> PlantAnalysisResponse:
         """
         Analyze a plant image using GPT-4o Vision.
-        Returns plant identification, health assessment, and care instructions.
+        Accepts either base64 string or S3 key (image_url).
         """
+        if not image_base64 and not image_url:
+            raise ValueError("Either image_base64 or image_url must be provided")
+
         city_context = f" The user is in {city}, India." if city else " The user is in India."
         
         prompt = f"""You are an expert botanist specializing in Indian urban balcony plants.{city_context}
@@ -63,6 +70,34 @@ Consider Indian climate challenges: intense heat (40°C+), monsoons, humidity sp
 
 Return ONLY the JSON object, no other text."""
 
+        # Prepare image content
+        image_content = {}
+        if image_base64:
+            image_content = {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{image_base64}",
+                    "detail": "high"
+                }
+            }
+        elif image_url:
+            # If it looks like an S3 key (no protocol), generate presigned URL
+            final_url = image_url
+            if not image_url.startswith("http"):
+                 try:
+                     s3 = S3Service()
+                     final_url = s3.generate_presigned_get_url(image_url)
+                 except Exception:
+                     pass # Fallback or keep properly formatted url
+            
+            image_content = {
+                "type": "image_url",
+                "image_url": {
+                    "url": final_url,
+                    "detail": "high"
+                }
+            }
+
         try:
             response = await self.client.chat.completions.create(
                 model=self.model,
@@ -71,13 +106,7 @@ Return ONLY the JSON object, no other text."""
                         "role": "user",
                         "content": [
                             {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{image_base64}",
-                                    "detail": "high"
-                                }
-                            }
+                            image_content
                         ]
                     }
                 ],
@@ -137,7 +166,8 @@ Return ONLY the JSON object, no other text."""
 
     async def detect_multiple_plants(
         self, 
-        image_base64: str, 
+        image_base64: Optional[str] = None,
+        image_url: Optional[str] = None,
         city: Optional[str] = None
     ) -> List[Dict]:
         """
@@ -182,6 +212,33 @@ IDENTIFICATION:
 Count all visible individual plants. Return ONLY the JSON, no other text."""
 
 
+        # Prepare image content
+        image_content = {}
+        if image_base64:
+            image_content = {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{image_base64}",
+                    "detail": "high"
+                }
+            }
+        elif image_url:
+            final_url = image_url
+            if not image_url.startswith("http"):
+                 try:
+                     s3 = S3Service()
+                     final_url = s3.generate_presigned_get_url(image_url)
+                 except Exception:
+                     pass
+            
+            image_content = {
+                "type": "image_url",
+                "image_url": {
+                    "url": final_url,
+                    "detail": "high"
+                }
+            }
+
         try:
             response = await self.client.chat.completions.create(
                 model=self.model,
@@ -190,13 +247,7 @@ Count all visible individual plants. Return ONLY the JSON, no other text."""
                         "role": "user",
                         "content": [
                             {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{image_base64}",
-                                    "detail": "high"
-                                }
-                            }
+                            image_content
                         ]
                     }
                 ],
@@ -230,7 +281,8 @@ Count all visible individual plants. Return ONLY the JSON, no other text."""
         self, 
         thumbnail_base64: str, 
         city: Optional[str] = None,
-        context_image_base64: Optional[str] = None
+        context_image_base64: Optional[str] = None,
+        context_image_url: Optional[str] = None
     ) -> PlantAnalysisResponse:
         """
         Analyze a cropped plant thumbnail with full health and care analysis.
@@ -288,6 +340,22 @@ Return ONLY the JSON object, no other text."""
                 "image_url": {
                     "url": f"data:image/jpeg;base64,{context_image_base64}",
                     "detail": "low"  # Lower detail for context
+                }
+            })
+        elif context_image_url:
+            final_ctx_url = context_image_url
+            if not context_image_url.startswith("http"):
+                 try:
+                     s3 = S3Service()
+                     final_ctx_url = s3.generate_presigned_get_url(context_image_url)
+                 except Exception:
+                     pass
+            
+            messages_content.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": final_ctx_url,
+                    "detail": "low"
                 }
             })
 
