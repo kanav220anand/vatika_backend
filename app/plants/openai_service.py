@@ -1,14 +1,18 @@
 """OpenAI service for plant identification and health analysis."""
 
 import re
+import json
 from typing import Optional, List, Dict
 from openai import AsyncOpenAI
 from app.core.config import get_settings
 from app.core.aws import S3Service
 from app.plants.models import PlantAnalysisResponse, PlantHealth, CareSchedule
 
+import logging
+import traceback
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 class OpenAIService:
@@ -68,7 +72,10 @@ Analyze this plant photo and return a JSON object with the following structure:
 
 Consider Indian climate challenges: intense heat (40°C+), monsoons, humidity spikes, dust, pollution, and harsh afternoon sun.
 
-Return ONLY the JSON object, no other text."""
+Return ONLY the JSON object, no other text.
+
+IMPORTANT: If the image does NOT contain a real plant (e.g., it's a coffee mug, animal, person, or artificial object), return a JSON with a field "is_plant": false.
+Example: {"is_plant": false, "reason": "Image contains a coffee mug, not a plant"}"""
 
         # Prepare image content
         image_content = {}
@@ -81,22 +88,34 @@ Return ONLY the JSON object, no other text."""
                 }
             }
         elif image_url:
-            # If it looks like an S3 key (no protocol), generate presigned URL
-            final_url = image_url
+            # Hybrid Approach: Download from S3 to base64 (in-memory)
+            # OpenAI has trouble with S3 presigned URLs (redirects/headers), so we proxy it.
+            final_base64 = None
             if not image_url.startswith("http"):
                  try:
                      s3 = S3Service()
-                     final_url = s3.generate_presigned_get_url(image_url)
-                 except Exception:
-                     pass # Fallback or keep properly formatted url
+                     final_base64 = s3.download_file_as_base64(image_url)
+                 except Exception as e:
+                     print(f"DEBUG S3 DOWNLOAD ERROR: {e}")
+                     pass 
             
-            image_content = {
-                "type": "image_url",
-                "image_url": {
-                    "url": final_url,
-                    "detail": "high"
+            if final_base64:
+                image_content = {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{final_base64}",
+                        "detail": "high"
+                    }
                 }
-            }
+            else:
+                # Fallback to original URL if not S3 key or download failed
+                image_content = {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": image_url,
+                        "detail": "high"
+                    }
+                }
 
         try:
             response = await self.client.chat.completions.create(
@@ -139,6 +158,29 @@ Return ONLY the JSON object, no other text."""
         except json.JSONDecodeError as e:
             raise ValueError(f"Failed to parse OpenAI response as JSON: {e}. Response: {content[:200]}")
         
+        # Check if it's not a plant
+        if data.get("is_plant") is False:
+             raise ValueError(f"This doesn't look like a plant. {data.get('reason', 'Please upload a clear photo of a plant.')}")
+        
+        # Validate required fields are present
+        required_fields = ["plant_id", "scientific_name", "common_name", "confidence", "health", "care"]
+        missing_fields = [field for field in required_fields if field not in data]
+        if missing_fields:
+            raise ValueError(f"Incomplete plant analysis - missing fields: {', '.join(missing_fields)}. Try taking a clearer photo of the plant.")
+        
+        # Validate health object
+        if not isinstance(data.get("health"), dict):
+            raise ValueError("Invalid health data in analysis. Please try again with a clearer photo.")
+        
+        health_required = ["status", "confidence"]
+        health_missing = [field for field in health_required if field not in data["health"]]
+        if health_missing:
+            raise ValueError(f"Incomplete health analysis - missing: {', '.join(health_missing)}. Try a clearer photo.")
+        
+        # Validate care object
+        if not isinstance(data.get("care"), dict):
+            raise ValueError("Invalid care data in analysis. Please try again.")
+        
         # Build response model
         health = PlantHealth(
             status=data["health"]["status"],
@@ -148,9 +190,9 @@ Return ONLY the JSON object, no other text."""
         )
         
         care = CareSchedule(
-            water_frequency=data["care"]["water_frequency"],
-            light_preference=data["care"]["light_preference"],
-            humidity=data["care"]["humidity"],
+            water_frequency=data["care"].get("water_frequency", {}),
+            light_preference=data["care"].get("light_preference", "bright_indirect"),
+            humidity=data["care"].get("humidity", "medium"),
             fertilizer_frequency=data["care"].get("fertilizer_frequency"),
             indian_climate_tips=data["care"].get("indian_climate_tips", []),
         )
@@ -209,7 +251,12 @@ IDENTIFICATION:
 - For preliminary_name, use common names (e.g., "Snake Plant", "Money Plant", "Rubber Plant")
 - If unsure, use general name like "Succulent" or "Fern"
 
-Count all visible individual plants. Return ONLY the JSON, no other text."""
+Count all visible individual plants. Return ONLY the JSON, no other text.
+
+IMPORTANT: If the image does NOT contain any real plants (e.g., it's a coffee mug, animal, or random object), return {{"plants": []}}."""
+
+
+
 
 
         # Prepare image content
@@ -223,21 +270,35 @@ Count all visible individual plants. Return ONLY the JSON, no other text."""
                 }
             }
         elif image_url:
-            final_url = image_url
+            final_base64 = None
             if not image_url.startswith("http"):
+                 logger.error(f"DEBUG: Downloading S3 key: {image_url}")
                  try:
                      s3 = S3Service()
-                     final_url = s3.generate_presigned_get_url(image_url)
-                 except Exception:
+                     final_base64 = s3.download_file_as_base64(image_url)
+                     logger.error(f"DEBUG: Download successful. Base64 len: {len(final_base64) if final_base64 else 0}")
+                 except Exception as e:
+                     logger.error(f"DEBUG S3 DOWNLOAD ERROR: {e}")
                      pass
             
-            image_content = {
-                "type": "image_url",
-                "image_url": {
-                    "url": final_url,
-                    "detail": "high"
+            if final_base64:
+                logger.error("DEBUG: Using Base64 content for OpenAI")
+                image_content = {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{final_base64}",
+                        "detail": "high"
+                    }
                 }
-            }
+            else:
+                logger.error(f"DEBUG: Using raw URL: {image_url}")
+                image_content = {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": image_url,
+                        "detail": "high"
+                    }
+                }
 
         try:
             response = await self.client.chat.completions.create(
@@ -402,6 +463,25 @@ Return ONLY the JSON object, no other text."""
             raise ValueError(f"Failed to parse plant analysis. Please try again.")
 
         
+        # Validate required fields are present
+        required_fields = ["plant_id", "scientific_name", "common_name", "confidence", "health", "care"]
+        missing_fields = [field for field in required_fields if field not in data]
+        if missing_fields:
+            raise ValueError(f"Incomplete plant analysis - missing fields: {', '.join(missing_fields)}. Try taking a clearer photo of the plant.")
+        
+        # Validate health object
+        if not isinstance(data.get("health"), dict):
+            raise ValueError("Invalid health data in analysis. Please try again with a clearer photo.")
+        
+        health_required = ["status", "confidence"]
+        health_missing = [field for field in health_required if field not in data["health"]]
+        if health_missing:
+            raise ValueError(f"Incomplete health analysis - missing: {', '.join(health_missing)}. Try a clearer photo.")
+        
+        # Validate care object
+        if not isinstance(data.get("care"), dict):
+            raise ValueError("Invalid care data in analysis. Please try again.")
+        
         # Build response model (same as analyze_plant)
         health = PlantHealth(
             status=data["health"]["status"],
@@ -411,9 +491,9 @@ Return ONLY the JSON object, no other text."""
         )
         
         care = CareSchedule(
-            water_frequency=data["care"]["water_frequency"],
-            light_preference=data["care"]["light_preference"],
-            humidity=data["care"]["humidity"],
+            water_frequency=data["care"].get("water_frequency", {}),
+            light_preference=data["care"].get("light_preference", "bright_indirect"),
+            humidity=data["care"].get("humidity", "medium"),
             fertilizer_frequency=data["care"].get("fertilizer_frequency"),
             indian_climate_tips=data["care"].get("indian_climate_tips", []),
         )

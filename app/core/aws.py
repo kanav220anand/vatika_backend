@@ -24,7 +24,8 @@ class S3Service:
                     "s3",
                     aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
                     aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-                    region_name=settings.AWS_REGION
+                    region_name=settings.AWS_REGION,
+                    config=boto3.session.Config(s3={'addressing_style': 'path'})
                 )
             except Exception as e:
                 logger.error(f"Failed to initialize S3 client: {e}")
@@ -103,3 +104,30 @@ class S3Service:
         except ClientError as e:
             logger.error(f"Error generating presigned GET URL: {e}")
             raise
+
+    def download_file_as_base64(self, object_name: str) -> str:
+        """
+        Download a file from S3 and return it as a base64 string.
+        Performed in-memory, no file is written to disk.
+        """
+        import base64
+        from io import BytesIO
+
+        if not self.client:
+            raise ValueError("AWS S3 credentials not configured.")
+
+        try:
+            file_stream = BytesIO()
+            self.client.download_fileobj(settings.AWS_S3_BUCKET, object_name, file_stream)
+            file_stream.seek(0)
+            return base64.b64encode(file_stream.read()).decode('utf-8')
+        except ClientError as e:
+            logger.error(f"Error downloading file from S3: {e}")
+            raise
+
+    def get_public_url(self, object_name: str) -> str:
+        """
+        Get the public URL for an S3 object.
+        Assumes bucket has public read access or CloudFront is configured.
+        """
+        return f"https://{settings.AWS_S3_BUCKET}.s3.{settings.AWS_REGION}.amazonaws.com/{object_name}"

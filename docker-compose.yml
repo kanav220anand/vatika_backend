@@ -8,7 +8,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - MONGO_URI=mongodb://mongo:27017
+      - MONGO_URI=${MONGO_URI:-mongodb://mongo:27017}
       - MONGO_DB_NAME=plantsitter
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-super-secret-key-change-me}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
@@ -48,12 +48,12 @@ services:
     networks:
       - plantsitter-network
     profiles:
-      - tools  # Only starts with: docker-compose --profile tools up
+      - tools # Only starts with: docker-compose --profile tools up
 
 volumes:
   mongo-data:
 
+
 networks:
   plantsitter-network:
     driver: bridge
-

@@ -19,9 +19,14 @@ class Database:
     async def connect(cls):
         """Connect to MongoDB."""
         # Use certifi for SSL certificates to avoid handshake errors on some systems (especially macOS)
+        # Configure SSL context for external databases (like Atlas)
+        client_kwargs = {}
+        if "mongodb+srv://" in settings.MONGO_URI or "ssl=true" in settings.MONGO_URI.lower():
+            client_kwargs["tlsCAFile"] = certifi.where()
+
         cls.client = AsyncIOMotorClient(
             settings.MONGO_URI,
-            tlsCAFile=certifi.where()
+            **client_kwargs
         )
         cls.db = cls.client[settings.MONGO_DB_NAME]
         

@@ -1,6 +1,6 @@
 """Plant service - handles plant CRUD and knowledge base operations."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List
 from bson import ObjectId
 
@@ -32,6 +32,39 @@ class PlantService:
             raise BadRequestException("Invalid plant ID")
         return ObjectId(id_str)
     
+    @staticmethod
+    def get_current_season() -> str:
+        """Return current season based on Indian climate."""
+        month = datetime.utcnow().month
+        if month in [3, 4, 5]:      # Mar-May: Summer
+            return "summer"
+        elif month in [6, 7, 8, 9]: # Jun-Sept: Monsoon
+            return "monsoon"
+        else:                        # Oct-Feb: Winter
+            return "winter"
+    
+    @classmethod
+    def calculate_next_water_date(cls, plant_doc: dict) -> Optional[datetime]:
+        """Calculate when plant needs water next based on care schedule."""
+        last_watered = plant_doc.get("last_watered")
+        care = plant_doc.get("care_schedule")
+        
+        if not care:
+            return None
+        
+        watering = care.get("watering", {})
+        if not watering:
+            return None
+        
+        season = cls.get_current_season()
+        days = watering.get(season, 3)  # Default 3 days
+        
+        if last_watered:
+            return last_watered + timedelta(days=days)
+        else:
+            # If never watered, due now
+            return datetime.utcnow()
+    
     # ==================== User Plants CRUD ====================
     
     @classmethod
@@ -44,12 +77,17 @@ class PlantService:
             "plant_id": plant_data.plant_id,
             "scientific_name": plant_data.scientific_name,
             "common_name": plant_data.common_name,
-            "nickname": plant_data.nickname or plant_data.common_name,  # Default to common name
+            "nickname": plant_data.nickname or plant_data.common_name,
             "image_url": plant_data.image_url,
             "health_status": plant_data.health_status,
             "notes": plant_data.notes,
             "last_watered": None,
+            "watering_streak": 0,
             "created_at": datetime.utcnow(),
+            # Care reminder fields
+            "care_schedule": plant_data.care_schedule.dict() if plant_data.care_schedule else None,
+            "reminders_enabled": plant_data.reminders_enabled,
+            "last_health_check": datetime.utcnow(),
         }
         
         result = await collection.insert_one(plant_doc)
@@ -81,17 +119,50 @@ class PlantService:
             await AchievementService.check_and_unlock_achievements(user_id)
         except Exception:
             pass  # Don't fail plant creation if achievement check fails
+        
+        # Log event
+        try:
+            from app.plants.events_service import EventService, EventType
+            await EventService.log_event(
+                user_id=user_id,
+                event_type=EventType.PLANT_ADDED,
+                plant_id=str(result.inserted_id),
+                metadata={"plant_name": plant_data.common_name}
+            )
+        except Exception:
+            pass
 
         return cls._doc_to_response(plant_doc)
 
     
     @classmethod
-    async def get_user_plants(cls, user_id: str) -> List[PlantResponse]:
-        """Get all plants for a user."""
+    async def get_user_plants(cls, user_id: str, skip: int = 0, limit: int = 50) -> List[PlantResponse]:
+        """Get plants for a user with pagination."""
         collection = cls._get_plants_collection()
-        cursor = collection.find({"user_id": user_id}).sort("created_at", -1)
-        plants = await cursor.to_list(length=100)
+        cursor = collection.find({"user_id": user_id}).sort("created_at", -1).skip(skip).limit(limit)
+        plants = await cursor.to_list(length=limit)
         return [cls._doc_to_response(p) for p in plants]
+    
+    @classmethod
+    async def get_plants_needing_water(cls, user_id: str) -> List[PlantResponse]:
+        """Get plants that need watering (due today or overdue)."""
+        collection = cls._get_plants_collection()
+        now = datetime.utcnow()
+        
+        # Get all user's plants with reminders enabled
+        cursor = collection.find({
+            "user_id": user_id,
+            "reminders_enabled": True,
+            "care_schedule": {"$ne": None}
+        })
+        
+        due_plants = []
+        async for doc in cursor:
+            next_water = cls.calculate_next_water_date(doc)
+            if next_water and next_water <= now:
+                due_plants.append(cls._doc_to_response(doc))
+        
+        return due_plants
     
     @classmethod
     async def get_plant_by_id(cls, plant_id: str, user_id: str) -> PlantResponse:
@@ -337,21 +408,44 @@ class PlantService:
     
     # ==================== Helpers ====================
     
-    @staticmethod
-    def _doc_to_response(doc: dict) -> PlantResponse:
+    @classmethod
+    def _doc_to_response(cls, doc: dict) -> PlantResponse:
         """Convert MongoDB document to PlantResponse."""
+        # Import here to avoid circular import
+        from app.plants.models import CareScheduleStored, WateringSchedule
+        
+        # Parse care_schedule if exists
+        care_schedule = None
+        if doc.get("care_schedule"):
+            care_data = doc["care_schedule"]
+            watering = care_data.get("watering", {})
+            care_schedule = CareScheduleStored(
+                watering=WateringSchedule(
+                    summer=watering.get("summer", 3),
+                    monsoon=watering.get("monsoon", 5),
+                    winter=watering.get("winter", 7)
+                ),
+                light_preference=care_data.get("light_preference", "bright_indirect"),
+                humidity=care_data.get("humidity", "medium"),
+                indian_climate_tips=care_data.get("indian_climate_tips", [])
+            )
+        
         return PlantResponse(
             id=str(doc["_id"]),
             user_id=doc["user_id"],
             plant_id=doc["plant_id"],
             scientific_name=doc["scientific_name"],
             common_name=doc["common_name"],
-            nickname=doc.get("nickname") or doc["common_name"],  # Fallback for old plants
+            nickname=doc.get("nickname") or doc["common_name"],
             image_url=doc.get("image_url"),
             health_status=doc.get("health_status", "unknown"),
             notes=doc.get("notes"),
             last_watered=doc.get("last_watered"),
             watering_streak=doc.get("watering_streak", 0),
             created_at=doc["created_at"],
+            care_schedule=care_schedule,
+            reminders_enabled=doc.get("reminders_enabled", True),
+            next_water_date=cls.calculate_next_water_date(doc),
+            last_health_check=doc.get("last_health_check")
         )
 

@@ -23,6 +23,7 @@ from app.plants.models import (
 from app.plants.service import PlantService
 from app.plants.openai_service import OpenAIService
 from app.plants.video_service import VideoService, ImageService, VideoProcessingError
+from app.core.aws import S3Service
 
 
 router = APIRouter(prefix="/plants", tags=["Plants"])
@@ -102,19 +103,16 @@ async def detect_plants(
             image_base64 = request.image_base64
         elif request.image_url:
             source_type = "image"
-            # For detection, we currently rely on base64 for cropping. 
-            # Ideally we should download the image from S3 URL to get base64/bytes for processing.
+            # For detection, we rely on base64 for cropping thumbnails later.
             if not request.image_base64:
-                 # TODO: Fetch image from S3 url to process thumbnails
-                 # For now, simplistic fallback to base64 required
-                 if not request.image_base64:
-                     # This logic implies we need base64 for cropping even if we have URL.
-                     # However, for pure detection (OpenAI), URL is fine. 
-                     # But for creating thumbnails (ImageService.crop_plant_thumbnail), we need the image data.
-                     # Let's assume for S3 upload flow, the frontend might need to send base64 OR
-                     # we implement S3 download here. To keep it simple for now, we will require the frontend
-                     # to send base64 for detection (as it does now) OR we implement download logic.
-                     # BUT, the mobile app wants to avoid uploading large usage. 
+                 try:
+                     # Download from S3 to get base64 for cropping
+                     if not request.image_url.startswith("http"):
+                         s3 = S3Service()
+                         image_base64 = s3.download_file_as_base64(request.image_url)
+                 except Exception as e:
+                     print(f"DEBUG ERROR: Failed to download source image from S3: {e}")
+                     # Proceeding without base64 might cause crop failure later if plants detected
                      pass
 
         
@@ -131,7 +129,8 @@ async def detect_plants(
         
         # Let's focus on AnalyzeThumbnail first for S3 flow as it's the main saving step
         detected_plants = await openai_service.detect_multiple_plants(
-            image_base64=request.image_base64 or (request.image_url if request.image_url else ""), 
+            image_base64=image_base64,
+            image_url=request.image_url, 
             city=city
         )
         
@@ -155,10 +154,13 @@ async def detect_plants(
             except Exception:
                 return None
         
-        loop = asyncio.get_event_loop()
-        with ThreadPoolExecutor(max_workers=min(len(detected_plants), 4)) as executor:
-            tasks = [loop.run_in_executor(executor, process_plant, plant) for plant in detected_plants]
-            results = await asyncio.gather(*tasks)
+        if not detected_plants:
+            results = []
+        else:
+            loop = asyncio.get_event_loop()
+            with ThreadPoolExecutor(max_workers=min(len(detected_plants), 4)) as executor:
+                tasks = [loop.run_in_executor(executor, process_plant, plant) for plant in detected_plants]
+                results = await asyncio.gather(*tasks)
         
         plant_boundaries = [r for r in results if r is not None]
         
@@ -172,6 +174,9 @@ async def detect_plants(
     except AppException:
         raise
     except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"DEBUG ERROR: {str(e)}")
         raise AppException(f"Failed to detect plants: {str(e)}")
 
 
@@ -217,10 +222,46 @@ async def save_plant(
     return await PlantService.create_plant(current_user["id"], plant_data)
 
 
+def add_signed_url_to_plant(plant_dict: dict) -> dict:
+    """
+    Convert S3 key in image_url to a presigned URL.
+    Only processes if image_url looks like an S3 key (starts with 'plants/' or 'uploads/').
+    """
+    if not plant_dict.get("image_url"):
+        return plant_dict
+    
+    image_url = plant_dict["image_url"]
+    
+    # Only generate presigned URL if it's an S3 key (not already a full URL)
+    if image_url.startswith("plants/") or image_url.startswith("uploads/"):
+        try:
+            s3_service = S3Service()
+            # Generate presigned URL valid for 1 hour
+            plant_dict["image_url"] = s3_service.generate_presigned_get_url(image_url, expiration=3600)
+        except Exception:
+            # If presigned URL fails, leave as is
+            pass
+    
+    return plant_dict
+
+
 @router.get("", response_model=List[PlantResponse])
-async def list_plants(current_user: dict = Depends(get_current_user)):
-    """Get all plants in your collection."""
-    return await PlantService.get_user_plants(current_user["id"])
+async def list_plants(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get plants in your collection with pagination."""
+    plants = await PlantService.get_user_plants(current_user["id"], skip=skip, limit=limit)
+    # Convert S3 keys to presigned URLs
+    return [add_signed_url_to_plant(p.dict() if hasattr(p, 'dict') else dict(p)) for p in plants]
+
+
+@router.get("/due-for-water", response_model=List[PlantResponse])
+async def get_plants_due_for_water(current_user: dict = Depends(get_current_user)):
+    """Get plants that need watering today or are overdue."""
+    plants = await PlantService.get_plants_needing_water(current_user["id"])
+    return [add_signed_url_to_plant(p.dict() if hasattr(p, 'dict') else dict(p)) for p in plants]
 
 
 @router.get("/search")
@@ -245,7 +286,8 @@ async def get_plant(
     current_user: dict = Depends(get_current_user)
 ):
     """Get a specific plant from your collection."""
-    return await PlantService.get_plant_by_id(plant_id, current_user["id"])
+    plant = await PlantService.get_plant_by_id(plant_id, current_user["id"])
+    return add_signed_url_to_plant(plant.dict() if hasattr(plant, 'dict') else dict(plant))
 
 
 @router.patch("/{plant_id}", response_model=PlantResponse)
@@ -255,11 +297,12 @@ async def update_plant(
     current_user: dict = Depends(get_current_user)
 ):
     """Update a plant in your collection (health_status, notes, image_url)."""
-    return await PlantService.update_plant(
+    plant = await PlantService.update_plant(
         plant_id, 
         current_user["id"], 
         updates.model_dump(exclude_none=True)
     )
+    return add_signed_url_to_plant(plant.dict() if hasattr(plant, 'dict') else dict(plant))
 
 
 @router.delete("/{plant_id}", status_code=status.HTTP_204_NO_CONTENT)

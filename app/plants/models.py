@@ -14,7 +14,7 @@ class PlantHealth(BaseModel):
 
 
 class CareSchedule(BaseModel):
-    """Care schedule for a plant."""
+    """Care schedule for a plant (from OpenAI analysis)."""
     water_frequency: Dict[str, str] = Field(
         default_factory=dict,
         description="Watering frequency by season: summer, monsoon, winter"
@@ -22,6 +22,21 @@ class CareSchedule(BaseModel):
     light_preference: str = Field(default="bright_indirect")
     humidity: str = Field(default="medium")
     fertilizer_frequency: Optional[str] = None
+    indian_climate_tips: List[str] = Field(default_factory=list)
+
+
+class WateringSchedule(BaseModel):
+    """Watering schedule with integer days per season."""
+    summer: int = Field(default=3, description="Days between watering in summer")
+    monsoon: int = Field(default=5, description="Days between watering in monsoon")
+    winter: int = Field(default=7, description="Days between watering in winter")
+
+
+class CareScheduleStored(BaseModel):
+    """Care schedule stored with plant (integer days for calculations)."""
+    watering: WateringSchedule = Field(default_factory=WateringSchedule)
+    light_preference: str = Field(default="bright_indirect")
+    humidity: str = Field(default="medium")
     indian_climate_tips: List[str] = Field(default_factory=list)
 
 
@@ -50,6 +65,8 @@ class PlantCreate(BaseModel):
     image_url: Optional[str] = None
     health_status: str = "healthy"
     notes: Optional[str] = None
+    care_schedule: Optional[CareScheduleStored] = None  # Stored care data
+    reminders_enabled: bool = True
 
 
 class PlantUpdate(BaseModel):
@@ -73,6 +90,11 @@ class PlantResponse(BaseModel):
     last_watered: Optional[datetime] = None
     watering_streak: int = 0  # Consecutive days watered on schedule
     created_at: datetime
+    # Care reminder fields
+    care_schedule: Optional[CareScheduleStored] = None
+    reminders_enabled: bool = True
+    next_water_date: Optional[datetime] = None  # Calculated field
+    last_health_check: Optional[datetime] = None
 
 
 # ==================== Multi-Plant Detection Models ====================

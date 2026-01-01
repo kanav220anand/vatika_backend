@@ -291,8 +291,8 @@ ACHIEVEMENTS = [
 async def seed_achievements():
     """Seed the achievements collection."""
     # Get MongoDB connection string - use 'mongo' as hostname when running in Docker
-    mongo_url = os.getenv("MONGO_URI", "mongodb://mongo:27017")
-    db_name = os.getenv("MONGO_DB_NAME", "plantsitter")
+    mongo_url = "mongodb+srv://vatika:FXT5WM8QL2WsOp3D@vatika.zfdem2i.mongodb.net/?appName=vatika"
+    db_name = "vatika"
 
     
     print(f"Connecting to MongoDB at {mongo_url}...")
