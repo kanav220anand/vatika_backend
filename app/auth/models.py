@@ -34,6 +34,15 @@ class GoogleAuthRequest(BaseModel):
     id_token: str = Field(..., description="Google ID token from frontend")
 
 
+class UserLevelSummary(BaseModel):
+    """Minimal level info attached to a user profile."""
+    level: int
+    title: str
+    icon: str
+    color: str
+    badge_image_url: Optional[str] = None
+
+
 class UserResponse(BaseModel):
     """Schema for user response (excludes password)."""
     id: str
@@ -47,6 +56,7 @@ class UserResponse(BaseModel):
     total_achievement_score: int = 0
     level: int = 1
     title: str = "Seed"
+    user_level: Optional[UserLevelSummary] = None
     created_at: datetime
 
 

@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: str = ""
     AWS_REGION: str = "ap-south-1"
     AWS_S3_BUCKET: str = ""
+
+    # Public assets base URL (e.g. https://vatika-assets-prod.s3.us-east-1.amazonaws.com/)
+    S3_BASE_URL: str = ""
+
+    # Plant timeline (weekly snapshots)
+    # Set to 0 to disable the weekly restriction for testing.
+    PLANT_TIMELINE_MIN_DAYS_BETWEEN_SNAPSHOTS: int = 7
     
     class Config:
         env_file = ".env"
@@ -50,4 +57,3 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Cached settings instance."""
     return Settings()
-

@@ -11,7 +11,7 @@ from google.auth.transport import requests
 from app.core.config import get_settings
 from app.core.database import Database
 from app.core.exceptions import BadRequestException, UnauthorizedException, NotFoundException
-from app.auth.models import UserCreate, UserResponse, TokenResponse
+from app.auth.models import UserCreate, UserResponse, TokenResponse, UserLevelSummary
 from app.achievements.service import AchievementService
 
 settings = get_settings()
@@ -21,51 +21,47 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 class AuthService:
     """Handles authentication and user operations."""
     
-    # Cache for levels to avoid repeated DB queries
-    _levels_cache: list = []
-    
-    # ==================== Gamification ====================
-    
+    # ==================== Profile Helpers ====================
+
     @classmethod
-    async def _get_levels_from_db(cls) -> list:
-        """Fetch levels from database (cached)."""
-        if cls._levels_cache:
-            return cls._levels_cache
-        
-        collection = Database.get_collection("user_levels")
-        cursor = collection.find({"is_active": True}).sort("sort_order", 1)
-        cls._levels_cache = await cursor.to_list(length=100)
-        return cls._levels_cache
-    
+    async def _get_user_level_summary(cls, points: int) -> UserLevelSummary:
+        """Get minimal level info for a user, including expanded badge URL."""
+        from app.gamification.service import GamificationService
+
+        level_doc = await GamificationService.get_level_for_points(points)
+        if not level_doc:
+            levels = await GamificationService.get_all_levels(use_cache=True)
+            level_doc = levels[0].model_dump() if levels else {}
+
+        return UserLevelSummary(
+            level=level_doc.get("level", 1),
+            title=level_doc.get("title", "Seed"),
+            icon=level_doc.get("icon", "🫘"),
+            color=level_doc.get("color", "#8B5A2B"),
+            badge_image_url=level_doc.get("badge_image_url"),
+        )
+
     @classmethod
-    async def calculate_level(cls, points: int) -> Tuple[int, str]:
-        """Calculate level and title based on points from database."""
-        levels = await cls._get_levels_from_db()
-        
-        for level in levels:
-            min_pts = level["min_points"]
-            max_pts = level.get("max_points")
-            
-            if max_pts is None:
-                # Max level - no upper bound
-                if points >= min_pts:
-                    return level["level"], level["title"]
-            elif min_pts <= points <= max_pts:
-                return level["level"], level["title"]
-        
-        # Fallback to level 1
-        if levels:
-            return levels[0]["level"], levels[0]["title"]
-        return 1, "Seed"  # Emergency fallback
-    
-    @classmethod
-    async def get_level_icon(cls, level: int) -> str:
-        """Get icon for a level."""
-        levels = await cls._get_levels_from_db()
-        for lvl in levels:
-            if lvl["level"] == level:
-                return lvl["icon"]
-        return "🫘"
+    async def _build_user_response(cls, user: dict) -> UserResponse:
+        """Build a consistent UserResponse from a DB user document."""
+        points = user.get("total_achievement_score", 0)
+        user_level = await cls._get_user_level_summary(points)
+
+        return UserResponse(
+            id=str(user["_id"]),
+            email=user["email"],
+            name=user["name"],
+            city=user.get("city"),
+            balcony_orientation=user.get("balcony_orientation"),
+            auth_provider=user.get("auth_provider", "email"),
+            profile_picture=user.get("profile_picture"),
+            onboarding_status=user.get("onboarding_status", "never_shown"),
+            total_achievement_score=points,
+            level=user_level.level,
+            title=user_level.title,
+            user_level=user_level,
+            created_at=user["created_at"],
+        )
 
     @classmethod
     async def add_score(cls, user_id: str, score: int) -> int:
@@ -173,21 +169,9 @@ class AuthService:
                     {"_id": existing_user["_id"]},
                     {"$set": {"profile_picture": google_user["picture"]}}
                 )
+                existing_user["profile_picture"] = google_user["picture"]
             
-            user_response = UserResponse(
-                id=user_id,
-                email=existing_user["email"],
-                name=existing_user["name"],
-                city=existing_user.get("city"),
-                balcony_orientation=existing_user.get("balcony_orientation"),
-                auth_provider=existing_user.get("auth_provider", "email"),
-                profile_picture=google_user.get("picture") or existing_user.get("profile_picture"),
-                onboarding_status=existing_user.get("onboarding_status", "never_shown"),
-                total_achievement_score=existing_user.get("total_achievement_score", 0),
-                level=(await cls.calculate_level(existing_user.get("total_achievement_score", 0)))[0],
-                title=(await cls.calculate_level(existing_user.get("total_achievement_score", 0)))[1],
-                created_at=existing_user["created_at"],
-            )
+            user_response = await cls._build_user_response(existing_user)
             
             return TokenResponse(access_token=token, user=user_response, is_new_user=False), False
         
@@ -214,26 +198,11 @@ class AuthService:
             await AchievementService.unlock_achievement(user_id, "early_adopter")
             
             token = cls.create_access_token(user_id, google_user["email"])
-            
-            # Use actual score (5 welcome bonus)
-            initial_score = 5
-            level_info = await cls.calculate_level(initial_score)
-            
-            user_response = UserResponse(
-                id=user_id,
-                email=google_user["email"],
-                name=google_user["name"],
-                city=None,
-                balcony_orientation=None,
-                auth_provider="google",
-                profile_picture=google_user.get("picture"),
-                onboarding_status="never_shown",
-                total_achievement_score=initial_score,
-                level=level_info[0],
-                title=level_info[1],
-                created_at=user_doc["created_at"],
-            )
-            
+
+            # Fetch fresh user doc to include any score changes from achievements
+            created = await users.find_one({"_id": ObjectId(user_id)})
+            user_response = await cls._build_user_response(created)
+
             return TokenResponse(access_token=token, user=user_response, is_new_user=True), True
     
     # ==================== User Operations ====================
@@ -273,25 +242,11 @@ class AuthService:
         
         # Generate token
         token = cls.create_access_token(user_id, user_data.email)
-        
-        # Use actual score (5 welcome bonus)
-        initial_score = 5
-        level_info = await cls.calculate_level(initial_score)
-        
-        user_response = UserResponse(
-            id=user_id,
-            email=user_data.email,
-            name=user_data.name,
-            city=user_data.city,
-            balcony_orientation=user_data.balcony_orientation,
-            auth_provider="email",
-            onboarding_status="never_shown",
-            total_achievement_score=initial_score,
-            level=level_info[0],
-            title=level_info[1],
-            created_at=user_doc["created_at"],
-        )
-        
+
+        # Fetch fresh user doc to include any score changes from achievements
+        created = await users.find_one({"_id": ObjectId(user_id)})
+        user_response = await cls._build_user_response(created)
+
         return TokenResponse(access_token=token, user=user_response, is_new_user=True)
     
     @classmethod
@@ -315,21 +270,8 @@ class AuthService:
         
         user_id = str(user["_id"])
         token = cls.create_access_token(user_id, user["email"])
-        
-        user_response = UserResponse(
-            id=user_id,
-            email=user["email"],
-            name=user["name"],
-            city=user.get("city"),
-            balcony_orientation=user.get("balcony_orientation"),
-            auth_provider=user.get("auth_provider", "email"),
-            profile_picture=user.get("profile_picture"),
-            onboarding_status=user.get("onboarding_status", "never_shown"),
-            total_achievement_score=user.get("total_achievement_score", 0),
-            level=(await cls.calculate_level(user.get("total_achievement_score", 0)))[0],
-            title=(await cls.calculate_level(user.get("total_achievement_score", 0)))[1],
-            created_at=user["created_at"],
-        )
+
+        user_response = await cls._build_user_response(user)
         
         return TokenResponse(access_token=token, user=user_response)
     
@@ -341,21 +283,8 @@ class AuthService:
         user = await users.find_one({"_id": ObjectId(user_id)})
         if not user:
             raise NotFoundException("User not found")
-        
-        return UserResponse(
-            id=str(user["_id"]),
-            email=user["email"],
-            name=user["name"],
-            city=user.get("city"),
-            balcony_orientation=user.get("balcony_orientation"),
-            auth_provider=user.get("auth_provider", "email"),
-            profile_picture=user.get("profile_picture"),
-            onboarding_status=user.get("onboarding_status", "never_shown"),
-            total_achievement_score=user.get("total_achievement_score", 0),
-            level=(await cls.calculate_level(user.get("total_achievement_score", 0)))[0],
-            title=(await cls.calculate_level(user.get("total_achievement_score", 0)))[1],
-            created_at=user["created_at"],
-        )
+
+        return await cls._build_user_response(user)
     
     @classmethod
     async def update_user(cls, user_id: str, updates: dict) -> UserResponse:

@@ -18,6 +18,7 @@ from app.achievements.views import router as achievements_router
 from app.gamification.views import router as gamification_router
 from app.recommended_plants import recommended_plants_router
 from app.api.files import router as files_router
+from app.cities import cities_router
 
 settings = get_settings()
 
@@ -81,6 +82,7 @@ app.include_router(achievements_router, prefix="/api/v1/vatika")
 app.include_router(gamification_router, prefix="/api/v1/vatika")
 app.include_router(recommended_plants_router, prefix="/api/v1/vatika")
 app.include_router(files_router, prefix="/api/v1/vatika")
+app.include_router(cities_router, prefix="/api/v1/vatika")
 
 
 @app.get("/", tags=["Health"])

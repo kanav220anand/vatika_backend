@@ -19,6 +19,7 @@ from app.plants.models import (
     PlantThumbnailAnalysisRequest,
     HealthSnapshot,
     HealthTimelineResponse,
+    HealthSnapshotCreateRequest,
 )
 from app.plants.service import PlantService
 from app.plants.openai_service import OpenAIService
@@ -334,6 +335,13 @@ async def get_health_timeline(
         snapshots, total = await PlantService.get_health_timeline(
             plant_id, current_user["id"], limit
         )
+
+        # Compute gating info (weekly snapshots)
+        next_allowed_at = await PlantService.get_next_allowed_snapshot_at(plant_id, current_user["id"])
+        min_days = PlantService._min_days_between_snapshots()
+
+        # Sign S3 keys for timeline images
+        s3 = S3Service()
         
         return HealthTimelineResponse(
             plant_id=plant_id,
@@ -344,12 +352,73 @@ async def get_health_timeline(
                     health_status=s["health_status"],
                     confidence=s.get("confidence", 0.0),
                     issues=s.get("issues", []),
-                    image_url=s.get("image_url"),
+                    immediate_actions=s.get("immediate_actions", []),
+                    image_url=(
+                        s3.generate_presigned_get_url((s.get("image_key") or s.get("image_url")), expiration=3600)
+                        if (s.get("image_key") or s.get("image_url")) and not str(s.get("image_key") or s.get("image_url")).startswith("http")
+                        else (s.get("image_key") or s.get("image_url"))
+                    ),
+                    thumbnail_url=(
+                        s3.generate_presigned_get_url(s.get("thumbnail_key"), expiration=3600)
+                        if s.get("thumbnail_key") and not str(s.get("thumbnail_key")).startswith("http")
+                        else s.get("thumbnail_key")
+                    ),
                     created_at=s["created_at"]
                 )
                 for s in snapshots
             ],
-            total_count=total
+            total_count=total,
+            next_allowed_at=next_allowed_at,
+            min_days_between_snapshots=min_days,
         )
+    except AppException as e:
+        raise e
     except Exception as e:
         raise AppException(f"Failed to get health timeline: {str(e)}")
+
+
+@router.post("/{plant_id}/health-snapshots", response_model=HealthSnapshot, status_code=status.HTTP_201_CREATED)
+async def create_health_snapshot(
+    plant_id: str,
+    request: HealthSnapshotCreateRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Add a weekly health snapshot photo for a plant (analyzed automatically)."""
+    try:
+        city = await AuthService.get_user_city(current_user["id"])
+        snapshot = await PlantService.create_weekly_health_snapshot(
+            plant_id=plant_id,
+            user_id=current_user["id"],
+            image_key=request.image_key,
+            city=city,
+        )
+
+        s3 = S3Service()
+        image_key = snapshot.get("image_key")
+        thumb_key = snapshot.get("thumbnail_key")
+
+        return HealthSnapshot(
+            id=str(snapshot["_id"]),
+            plant_id=snapshot["plant_id"],
+            health_status=snapshot["health_status"],
+            confidence=snapshot.get("confidence", 0.0),
+            issues=snapshot.get("issues", []),
+            immediate_actions=snapshot.get("immediate_actions", []),
+            image_url=s3.generate_presigned_get_url(image_key, expiration=3600) if image_key else None,
+            thumbnail_url=s3.generate_presigned_get_url(thumb_key, expiration=3600) if thumb_key else None,
+            created_at=snapshot["created_at"],
+        )
+    except AppException as e:
+        raise e
+    except Exception as e:
+        raise AppException(f"Failed to create health snapshot: {str(e)}")
+
+
+@router.delete("/{plant_id}/health-snapshots/{snapshot_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_health_snapshot(
+    plant_id: str,
+    snapshot_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Delete a health snapshot (also deletes S3 objects)."""
+    await PlantService.delete_health_snapshot(plant_id, current_user["id"], snapshot_id)

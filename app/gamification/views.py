@@ -5,10 +5,11 @@ from fastapi import APIRouter
 from app.gamification.service import GamificationService
 from app.gamification.models import LevelResponse
 
-router = APIRouter(prefix="/api/levels", tags=["Gamification"])
+router = APIRouter(tags=["Gamification"])
 
 
-@router.get("", response_model=List[LevelResponse])
+@router.get("/levels", response_model=List[LevelResponse])
+@router.get("/api/levels", response_model=List[LevelResponse])
 async def get_all_levels():
     """
     Get all available user levels.

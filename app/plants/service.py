@@ -1,17 +1,22 @@
 """Plant service - handles plant CRUD and knowledge base operations."""
 
+import base64
 from datetime import datetime, timedelta
 from typing import Optional, List
 from bson import ObjectId
 
 from app.core.database import Database
 from app.core.exceptions import NotFoundException, BadRequestException
+from app.core.config import get_settings
 from app.plants.models import (
     PlantCreate,
     PlantResponse,
     PlantAnalysisResponse,
     CareSchedule,
 )
+from app.plants.care_utils import convert_care_schedule_to_stored
+from app.plants.video_service import ImageService
+from app.core.aws import S3Service
 
 
 class PlantService:
@@ -71,6 +76,25 @@ class PlantService:
     async def create_plant(cls, user_id: str, plant_data: PlantCreate) -> PlantResponse:
         """Save a plant to user's collection."""
         collection = cls._get_plants_collection()
+
+        care_schedule_doc = None
+        if plant_data.care_schedule:
+            care_schedule_doc = plant_data.care_schedule.model_dump()
+        else:
+            care_source = None
+            if plant_data.care:
+                care_source = plant_data.care.model_dump()
+            else:
+                # Fallback: try the knowledge base (populated during /analyze)
+                try:
+                    knowledge = await cls._get_knowledge_collection().find_one({"plant_id": plant_data.plant_id})
+                    if knowledge and knowledge.get("care"):
+                        care_source = knowledge["care"]
+                except Exception:
+                    care_source = None
+
+            if care_source:
+                care_schedule_doc = convert_care_schedule_to_stored(care_source)
         
         plant_doc = {
             "user_id": user_id,
@@ -85,13 +109,37 @@ class PlantService:
             "watering_streak": 0,
             "created_at": datetime.utcnow(),
             # Care reminder fields
-            "care_schedule": plant_data.care_schedule.dict() if plant_data.care_schedule else None,
+            "care_schedule": care_schedule_doc,
             "reminders_enabled": plant_data.reminders_enabled,
             "last_health_check": datetime.utcnow(),
         }
+
+        # Persist latest health details if available (from /analyze)
+        if plant_data.health:
+            plant_doc.update(
+                {
+                    "health_confidence": plant_data.health.confidence,
+                    "health_issues": plant_data.health.issues,
+                    "health_immediate_actions": plant_data.health.immediate_actions,
+                }
+            )
         
         result = await collection.insert_one(plant_doc)
         plant_doc["_id"] = result.inserted_id
+
+        # Save initial health snapshot for timeline/history
+        if plant_data.health:
+            try:
+                await cls.save_health_snapshot(
+                    plant_id=str(result.inserted_id),
+                    user_id=user_id,
+                    health_status=plant_data.health.status,
+                    confidence=plant_data.health.confidence,
+                    issues=plant_data.health.issues,
+                    image_url=plant_data.image_url,
+                )
+            except Exception:
+                pass
         
         # Generate health notification if plant is not healthy
         if plant_data.health_status != "healthy":
@@ -358,21 +406,26 @@ class PlantService:
         health_status: str,
         confidence: float = 0.0,
         issues: list = None,
-        image_url: str = None
+        immediate_actions: list = None,
+        image_key: str = None,
+        thumbnail_key: str = None,
+        image_url: str = None  # backwards-compat (old field name)
     ) -> dict:
         """Save a health snapshot for a plant."""
         collection = cls._get_health_snapshots_collection()
-        
+
         snapshot = {
             "plant_id": plant_id,
             "user_id": user_id,
             "health_status": health_status,
             "confidence": confidence,
             "issues": issues or [],
-            "image_url": image_url,
+            "immediate_actions": immediate_actions or [],
+            "image_key": image_key or image_url,
+            "thumbnail_key": thumbnail_key,
             "created_at": datetime.utcnow()
         }
-        
+
         result = await collection.insert_one(snapshot)
         snapshot["_id"] = result.inserted_id
         
@@ -403,8 +456,149 @@ class PlantService:
         
         snapshots = await cursor.to_list(length=limit)
         total = await collection.count_documents({"plant_id": plant_id, "user_id": user_id})
-        
+
         return snapshots, total
+
+    @classmethod
+    async def _get_latest_health_snapshot(cls, plant_id: str, user_id: str) -> Optional[dict]:
+        collection = cls._get_health_snapshots_collection()
+        return await collection.find_one(
+            {"plant_id": plant_id, "user_id": user_id},
+            sort=[("created_at", -1)],
+        )
+
+    @classmethod
+    def _min_days_between_snapshots(cls) -> int:
+        settings = get_settings()
+        try:
+            return int(settings.PLANT_TIMELINE_MIN_DAYS_BETWEEN_SNAPSHOTS)
+        except Exception:
+            return 7
+
+    @classmethod
+    async def get_next_allowed_snapshot_at(cls, plant_id: str, user_id: str) -> Optional[datetime]:
+        """Return when the user can add the next snapshot; None means allowed now."""
+        min_days = cls._min_days_between_snapshots()
+        if min_days <= 0:
+            return None
+
+        latest = await cls._get_latest_health_snapshot(plant_id, user_id)
+        if not latest or not latest.get("created_at"):
+            return None
+
+        return latest["created_at"] + timedelta(days=min_days)
+
+    @classmethod
+    async def create_weekly_health_snapshot(
+        cls,
+        plant_id: str,
+        user_id: str,
+        image_key: str,
+        city: Optional[str] = None,
+    ) -> dict:
+        """
+        Create a new health snapshot (weekly-gated) from an uploaded image key.
+        Also generates and uploads a thumbnail, and updates the plant's latest health fields.
+        """
+        object_id = cls._validate_object_id(plant_id)
+        plants_collection = cls._get_plants_collection()
+        plant = await plants_collection.find_one({"_id": object_id, "user_id": user_id})
+        if not plant:
+            raise NotFoundException("Plant not found")
+
+        min_days = cls._min_days_between_snapshots()
+        next_allowed_at = await cls.get_next_allowed_snapshot_at(plant_id, user_id)
+        if min_days > 0 and next_allowed_at and datetime.utcnow() < next_allowed_at:
+            raise BadRequestException("Snapshot already added recently. Please try again later.")
+
+        if not image_key or not isinstance(image_key, str) or not image_key.strip():
+            raise BadRequestException("image_key is required")
+
+        s3 = S3Service()
+        try:
+            base64_full = s3.download_file_as_base64(image_key)
+        except Exception as e:
+            raise BadRequestException(f"Failed to download uploaded image: {e}")
+
+        # Generate thumbnail for UI
+        thumb_base64 = ImageService.create_thumbnail(base64_full, max_size=(384, 384))
+
+        # Use a larger but bounded image for analysis to reduce token/cost
+        analysis_base64 = ImageService.create_thumbnail(base64_full, max_size=(1024, 1024))
+
+        # Upload thumbnail to S3
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        thumb_key = f"plants/{user_id}/{plant_id}/thumbs/{timestamp}_{ObjectId()}_thumb.jpg"
+        s3.upload_bytes(thumb_key, base64.b64decode(thumb_base64), content_type="image/jpeg")
+
+        # Analyze health (no user-facing analyze action; runs on weekly snapshot)
+        from app.plants.openai_service import OpenAIService
+
+        openai_service = OpenAIService()
+        analysis = await openai_service.analyze_plant_thumbnail(
+            thumbnail_base64=analysis_base64,
+            city=city,
+        )
+
+        health = analysis.health
+
+        # Save snapshot and update plant latest health fields
+        snapshot = await cls.save_health_snapshot(
+            plant_id=plant_id,
+            user_id=user_id,
+            health_status=health.status,
+            confidence=health.confidence,
+            issues=health.issues,
+            immediate_actions=health.immediate_actions,
+            image_key=image_key,
+            thumbnail_key=thumb_key,
+        )
+
+        await plants_collection.update_one(
+            {"_id": object_id},
+            {
+                "$set": {
+                    "health_status": health.status,
+                    "health_confidence": health.confidence,
+                    "health_issues": health.issues,
+                    "health_immediate_actions": health.immediate_actions,
+                    "last_health_check": datetime.utcnow(),
+                }
+            },
+        )
+
+        snapshot["next_allowed_at"] = await cls.get_next_allowed_snapshot_at(plant_id, user_id)
+        snapshot["min_days_between_snapshots"] = min_days
+        return snapshot
+
+    @classmethod
+    async def delete_health_snapshot(cls, plant_id: str, user_id: str, snapshot_id: str) -> None:
+        """Delete a snapshot (and its S3 objects) if it belongs to the user."""
+        object_id = cls._validate_object_id(plant_id)
+        plants_collection = cls._get_plants_collection()
+        plant = await plants_collection.find_one({"_id": object_id, "user_id": user_id})
+        if not plant:
+            raise NotFoundException("Plant not found")
+
+        if not ObjectId.is_valid(snapshot_id):
+            raise BadRequestException("Invalid snapshot ID")
+
+        collection = cls._get_health_snapshots_collection()
+        snapshot = await collection.find_one({"_id": ObjectId(snapshot_id), "plant_id": plant_id, "user_id": user_id})
+        if not snapshot:
+            raise NotFoundException("Snapshot not found")
+
+        # Delete DB record first (so UI stops showing it even if S3 delete fails)
+        await collection.delete_one({"_id": snapshot["_id"]})
+
+        # Best-effort S3 cleanup
+        s3 = S3Service()
+        for key in [snapshot.get("image_key") or snapshot.get("image_url"), snapshot.get("thumbnail_key")]:
+            if key and isinstance(key, str) and (key.startswith("plants/") or key.startswith("uploads/")):
+                try:
+                    s3.delete_object(key)
+                except Exception:
+                    pass
     
     # ==================== Helpers ====================
     
@@ -427,6 +621,7 @@ class PlantService:
                 ),
                 light_preference=care_data.get("light_preference", "bright_indirect"),
                 humidity=care_data.get("humidity", "medium"),
+                fertilizer_frequency=care_data.get("fertilizer_frequency"),
                 indian_climate_tips=care_data.get("indian_climate_tips", [])
             )
         
@@ -439,6 +634,9 @@ class PlantService:
             nickname=doc.get("nickname") or doc["common_name"],
             image_url=doc.get("image_url"),
             health_status=doc.get("health_status", "unknown"),
+            health_confidence=doc.get("health_confidence"),
+            health_issues=doc.get("health_issues", []),
+            health_immediate_actions=doc.get("health_immediate_actions", []),
             notes=doc.get("notes"),
             last_watered=doc.get("last_watered"),
             watering_streak=doc.get("watering_streak", 0),
@@ -448,4 +646,3 @@ class PlantService:
             next_water_date=cls.calculate_next_water_date(doc),
             last_health_check=doc.get("last_health_check")
         )
-

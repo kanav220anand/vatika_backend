@@ -246,6 +246,8 @@ class AchievementService:
                 unlocked=is_unlocked,
                 unlocked_at=unlock_times.get(achievement_id),
                 progress=progress if not is_unlocked else 1.0,
+                condition_type=achievement.get("condition_type"),
+                condition_value=achievement.get("condition_value"),
             ))
         
         # Sort: unlocked first, then by tier (bronze → silver → gold → platinum)

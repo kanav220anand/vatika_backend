@@ -131,3 +131,31 @@ class S3Service:
         Assumes bucket has public read access or CloudFront is configured.
         """
         return f"https://{settings.AWS_S3_BUCKET}.s3.{settings.AWS_REGION}.amazonaws.com/{object_name}"
+
+    def upload_bytes(self, object_name: str, data: bytes, content_type: str = "image/jpeg") -> None:
+        """Upload raw bytes to S3."""
+        if not self.client:
+            raise ValueError("AWS S3 credentials not configured.")
+        try:
+            self.client.put_object(
+                Bucket=settings.AWS_S3_BUCKET,
+                Key=object_name,
+                Body=data,
+                ContentType=content_type,
+            )
+        except ClientError as e:
+            logger.error(f"Error uploading file to S3: {e}")
+            raise
+
+    def delete_object(self, object_name: str) -> None:
+        """Delete an object from S3."""
+        if not self.client:
+            raise ValueError("AWS S3 credentials not configured.")
+        try:
+            self.client.delete_object(
+                Bucket=settings.AWS_S3_BUCKET,
+                Key=object_name,
+            )
+        except ClientError as e:
+            logger.error(f"Error deleting file from S3: {e}")
+            raise

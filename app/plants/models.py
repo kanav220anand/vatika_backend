@@ -37,6 +37,7 @@ class CareScheduleStored(BaseModel):
     watering: WateringSchedule = Field(default_factory=WateringSchedule)
     light_preference: str = Field(default="bright_indirect")
     humidity: str = Field(default="medium")
+    fertilizer_frequency: Optional[str] = None
     indian_climate_tips: List[str] = Field(default_factory=list)
 
 
@@ -64,6 +65,9 @@ class PlantCreate(BaseModel):
     nickname: Optional[str] = None  # User-given name for the plant
     image_url: Optional[str] = None
     health_status: str = "healthy"
+    # Optional full analysis payloads (sent by clients after /analyze)
+    care: Optional[CareSchedule] = None
+    health: Optional[PlantHealth] = None
     notes: Optional[str] = None
     care_schedule: Optional[CareScheduleStored] = None  # Stored care data
     reminders_enabled: bool = True
@@ -86,6 +90,9 @@ class PlantResponse(BaseModel):
     nickname: Optional[str] = None  # User-given name for the plant
     image_url: Optional[str] = None
     health_status: str
+    health_confidence: Optional[float] = None
+    health_issues: List[str] = Field(default_factory=list)
+    health_immediate_actions: List[str] = Field(default_factory=list)
     notes: Optional[str] = None
     last_watered: Optional[datetime] = None
     watering_streak: int = 0  # Consecutive days watered on schedule
@@ -164,7 +171,9 @@ class HealthSnapshot(BaseModel):
     health_status: str
     confidence: float = 0.0
     issues: List[str] = Field(default_factory=list)
+    immediate_actions: List[str] = Field(default_factory=list)
     image_url: Optional[str] = None
+    thumbnail_url: Optional[str] = None
     created_at: datetime
 
 
@@ -173,3 +182,10 @@ class HealthTimelineResponse(BaseModel):
     plant_id: str
     snapshots: List[HealthSnapshot]
     total_count: int
+    next_allowed_at: Optional[datetime] = None
+    min_days_between_snapshots: int = 7
+
+
+class HealthSnapshotCreateRequest(BaseModel):
+    """Create a new health snapshot from an uploaded image key."""
+    image_key: str = Field(..., description="S3 key for the uploaded image")

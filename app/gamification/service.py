@@ -2,6 +2,7 @@
 
 from typing import List, Optional
 from app.core.database import Database
+from app.core.assets import public_asset_url
 from app.gamification.models import LevelResponse, UserLevelResponse
 
 
@@ -9,6 +10,19 @@ class GamificationService:
     """Handles gamification operations - levels, points, etc."""
     
     _levels_cache: Optional[List[dict]] = None
+
+    @staticmethod
+    def _normalize_level_doc(level: dict) -> dict:
+        """Remove Mongo-only fields and expand public asset URLs."""
+        if not level:
+            return {}
+
+        doc = {k: v for k, v in level.items() if k != "_id"}
+        if doc.get("badge_image_url"):
+            doc["badge_image_url"] = public_asset_url(doc["badge_image_url"])
+        if doc.get("perks") is None:
+            doc["perks"] = []
+        return doc
     
     @classmethod
     def _get_collection(cls):
@@ -29,9 +43,10 @@ class GamificationService:
         ).sort("sort_order", 1)
         
         levels = await cursor.to_list(length=100)
-        cls._levels_cache = levels
+        normalized = [cls._normalize_level_doc(level) for level in levels]
+        cls._levels_cache = normalized
         
-        return [LevelResponse(**level) for level in levels]
+        return [LevelResponse(**level) for level in normalized]
     
     @classmethod
     async def get_level_for_points(cls, points: int) -> Optional[dict]:
@@ -39,19 +54,14 @@ class GamificationService:
         Find the level that matches the given points.
         Returns the raw level document.
         """
-        collection = cls._get_collection()
-        
-        # Find level where min_points <= points AND (max_points >= points OR max_points is null)
-        level = await collection.find_one({
-            "is_active": True,
-            "min_points": {"$lte": points},
-            "$or": [
-                {"max_points": {"$gte": points}},
-                {"max_points": None}
-            ]
-        })
-        
-        return level
+        levels = await cls.get_all_levels(use_cache=True)
+        for lvl in levels:
+            if points >= lvl.min_points and (lvl.max_points is None or points <= lvl.max_points):
+                return lvl.model_dump()
+
+        if levels:
+            return levels[0].model_dump()
+        return None
     
     @classmethod
     async def calculate_user_level(cls, points: int) -> UserLevelResponse:
@@ -94,11 +104,9 @@ class GamificationService:
             points_to_next = max_points - points + 1
             
             # Get next level title
-            next_level = await cls._get_collection().find_one({
-                "is_active": True,
-                "level": current_level["level"] + 1
-            })
-            next_title = next_level["title"] if next_level else None
+            all_levels = await cls.get_all_levels(use_cache=True)
+            next_level = next((l for l in all_levels if l.level == current_level["level"] + 1), None)
+            next_title = next_level.title if next_level else None
         
         return UserLevelResponse(
             level=current_level["level"],

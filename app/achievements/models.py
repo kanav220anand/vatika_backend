@@ -43,6 +43,8 @@ class AchievementResponse(BaseModel):
     unlocked: bool = False
     unlocked_at: Optional[datetime] = None
     progress: float = 0.0  # 0-1 for progress bar
+    condition_type: Optional[str] = None
+    condition_value: Optional[int] = None
 
 
 class AchievementsListResponse(BaseModel):

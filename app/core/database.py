@@ -55,6 +55,14 @@ class Database:
         # Plant knowledge base collection
         await cls.db.plant_knowledge.create_index("plant_id", unique=True)
         await cls.db.plant_knowledge.create_index("common_names")
+
+        # Health snapshots collection (timeline)
+        await cls.db.health_snapshots.create_index([("user_id", 1), ("plant_id", 1), ("created_at", -1)])
+
+        # Cities collection
+        await cls.db.cities.create_index("name_lower", unique=True)
+        await cls.db.cities.create_index("state_lower")
+        await cls.db.cities.create_index("rank")
     
     @classmethod
     def get_collection(cls, name: str):
@@ -65,4 +73,3 @@ class Database:
 def get_db() -> AsyncIOMotorDatabase:
     """Get the database instance."""
     return Database.db
-
