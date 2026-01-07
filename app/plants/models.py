@@ -9,6 +9,8 @@ class PlantHealth(BaseModel):
     """Plant health assessment."""
     status: str = Field(..., description="healthy, stressed, unhealthy")
     confidence: float = Field(..., ge=0, le=1)
+    primary_issue: str = Field(..., description="Dominant issue tag (must match articles.issue_tags)")
+    severity: str = Field(..., description="low, medium, high")
     issues: List[str] = Field(default_factory=list)
     immediate_actions: List[str] = Field(default_factory=list)
 
@@ -52,6 +54,7 @@ class PlantAnalysisResponse(BaseModel):
     plant_id: str = Field(..., description="Normalized plant identifier")
     scientific_name: str
     common_name: str
+    plant_family: str = Field(..., description="One of PlantFamily enum values")
     confidence: float = Field(..., ge=0, le=1)
     health: PlantHealth
     care: CareSchedule
@@ -65,9 +68,16 @@ class PlantCreate(BaseModel):
     nickname: Optional[str] = None  # User-given name for the plant
     image_url: Optional[str] = None
     health_status: str = "healthy"
+    # Analysis metadata (used by downstream systems like articles)
+    plant_family: Optional[str] = None
+    confidence: Optional[float] = Field(default=None, ge=0, le=1)
     # Optional full analysis payloads (sent by clients after /analyze)
     care: Optional[CareSchedule] = None
     health: Optional[PlantHealth] = None
+    last_watered: Optional[datetime] = Field(
+        default=None,
+        description="When the user last watered the plant (optional; can be estimated if unknown).",
+    )
     notes: Optional[str] = None
     care_schedule: Optional[CareScheduleStored] = None  # Stored care data
     reminders_enabled: bool = True
@@ -78,6 +88,22 @@ class PlantUpdate(BaseModel):
     health_status: Optional[str] = None
     notes: Optional[str] = None
     image_url: Optional[str] = None
+
+
+class ImmediateFixItem(BaseModel):
+    """Actionable, user-trackable immediate fix for a plant."""
+
+    id: str
+    action: str
+    is_done: bool = False
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+
+
+class ImmediateFixUpdateRequest(BaseModel):
+    """Toggle completion of an immediate fix."""
+
+    is_done: bool = Field(..., description="Mark fix as done/undone")
 
 
 class PlantResponse(BaseModel):
@@ -91,8 +117,14 @@ class PlantResponse(BaseModel):
     image_url: Optional[str] = None
     health_status: str
     health_confidence: Optional[float] = None
+    health_primary_issue: Optional[str] = None
+    health_severity: Optional[str] = None
+    confidence_bucket: Optional[str] = None
+    plant_family: Optional[str] = None
+    health_score: Optional[int] = Field(default=None, ge=0, le=100)
     health_issues: List[str] = Field(default_factory=list)
     health_immediate_actions: List[str] = Field(default_factory=list)
+    immediate_fixes: List[ImmediateFixItem] = Field(default_factory=list)
     notes: Optional[str] = None
     last_watered: Optional[datetime] = None
     watering_streak: int = 0  # Consecutive days watered on schedule

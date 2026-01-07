@@ -45,15 +45,26 @@ class OpenAIService:
         
         prompt = f"""You are an expert botanist specializing in Indian urban balcony plants.{city_context}
 
+PlantFamily =
+- succulent_dry
+- tropical_foliage
+- flowering
+- herbs_edibles
+- woody_trees
+- ferns_moisture
+
 Analyze this plant photo and return a JSON object with the following structure:
 {{
     "plant_id": "lowercase_underscore_name (e.g., monstera_deliciosa)",
     "scientific_name": "Scientific name",
     "common_name": "Common name used in India",
+    "plant_family": "one of the PlantFamily enum values",
     "confidence": 0.0 to 1.0,
     "health": {{
         "status": "healthy" or "stressed" or "unhealthy",
         "confidence": 0.0 to 1.0,
+        "primary_issue": "exactly one from allowed list",
+        "severity": "low" or "medium" or "high",
         "issues": ["list of visible issues if any"],
         "immediate_actions": ["list of actions to take now"]
     }},
@@ -69,6 +80,23 @@ Analyze this plant photo and return a JSON object with the following structure:
         "indian_climate_tips": ["specific tips for Indian balcony conditions"]
     }}
 }}
+
+Choose plant_family based on care behavior, not botanical taxonomy.
+If unsure, select the closest match based on watering, light, and growth patterns.
+Always choose one family from the provided enum.
+
+Allowed primary_issue values (choose exactly one; must match articles.issue_tags):
+overwatering, underwatering, root_rot, root_stress, poor_drainage, dry_soil, water_imbalance,
+low_light, light_excess, direct_sunlight, sun_stress, light_instability,
+yellow_leaves, leaf_drooping, leaf_curling, leaf_spots, leaf_shedding, leaf_softness, leaf_crisping, leaf_wrinkling,
+heat_stress, cold_stress, low_humidity, high_humidity, airflow_issues, environmental_change, relocation_stress, air_pollution,
+bud_drop, early_flower_drop, no_blooming, flowering_cycle_disruption,
+leggy_growth, bolting, loss_of_flavor, slow_edible_growth,
+slow_growth, establishment_stress, fragile_recovery
+
+Choose exactly one primary_issue from the allowed list.
+Prefer the underlying cause over visible symptoms.
+If uncertain, choose a broader category rather than a specific one (e.g., water_imbalance, environmental_change).
 
 Consider Indian climate challenges: intense heat (40°C+), monsoons, humidity spikes, dust, pollution, and harsh afternoon sun.
 
@@ -163,7 +191,7 @@ Example: {"is_plant": false, "reason": "Image contains a coffee mug, not a plant
              raise ValueError(f"This doesn't look like a plant. {data.get('reason', 'Please upload a clear photo of a plant.')}")
         
         # Validate required fields are present
-        required_fields = ["plant_id", "scientific_name", "common_name", "confidence", "health", "care"]
+        required_fields = ["plant_id", "scientific_name", "common_name", "plant_family", "confidence", "health", "care"]
         missing_fields = [field for field in required_fields if field not in data]
         if missing_fields:
             raise ValueError(f"Incomplete plant analysis - missing fields: {', '.join(missing_fields)}. Try taking a clearer photo of the plant.")
@@ -172,10 +200,85 @@ Example: {"is_plant": false, "reason": "Image contains a coffee mug, not a plant
         if not isinstance(data.get("health"), dict):
             raise ValueError("Invalid health data in analysis. Please try again with a clearer photo.")
         
-        health_required = ["status", "confidence"]
+        allowed_plant_families = {
+            "succulent_dry",
+            "tropical_foliage",
+            "flowering",
+            "herbs_edibles",
+            "woody_trees",
+            "ferns_moisture",
+        }
+        plant_family = data.get("plant_family")
+        if not plant_family:
+            raise ValueError("Missing plant_family in analysis. Try again with a clearer photo.")
+        if plant_family not in allowed_plant_families:
+            raise ValueError(f"Invalid plant_family '{plant_family}'. Please try again with a clearer photo.")
+
+        health_required = ["status", "confidence", "primary_issue", "severity"]
         health_missing = [field for field in health_required if field not in data["health"]]
         if health_missing:
             raise ValueError(f"Incomplete health analysis - missing: {', '.join(health_missing)}. Try a clearer photo.")
+
+        allowed_primary_issues = {
+            # 🌱 Water & Roots
+            "overwatering",
+            "underwatering",
+            "root_rot",
+            "root_stress",
+            "poor_drainage",
+            "dry_soil",
+            "water_imbalance",
+            # ☀️ Light
+            "low_light",
+            "light_excess",
+            "direct_sunlight",
+            "sun_stress",
+            "light_instability",
+            # 🌿 Leaves & Growth Symptoms
+            "yellow_leaves",
+            "leaf_drooping",
+            "leaf_curling",
+            "leaf_spots",
+            "leaf_shedding",
+            "leaf_softness",
+            "leaf_crisping",
+            "leaf_wrinkling",
+            # 🌡 Environment & Stress
+            "heat_stress",
+            "cold_stress",
+            "low_humidity",
+            "high_humidity",
+            "airflow_issues",
+            "environmental_change",
+            "relocation_stress",
+            "air_pollution",
+            # 🌸 Flowering-specific
+            "bud_drop",
+            "early_flower_drop",
+            "no_blooming",
+            "flowering_cycle_disruption",
+            # 🌿 Herbs & Edibles
+            "leggy_growth",
+            "bolting",
+            "loss_of_flavor",
+            "slow_edible_growth",
+            # 🌴 Trees, Woody & Ferns
+            "slow_growth",
+            "establishment_stress",
+            "fragile_recovery",
+        }
+        primary_issue = data["health"].get("primary_issue")
+        if primary_issue not in allowed_primary_issues:
+            raise ValueError(
+                f"Invalid health.primary_issue '{primary_issue}'. Please try again with a clearer photo."
+            )
+
+        allowed_health_status = {"healthy", "stressed", "unhealthy"}
+        if data["health"].get("status") not in allowed_health_status:
+            raise ValueError("Invalid health.status in analysis. Please try again.")
+        allowed_severity = {"low", "medium", "high"}
+        if data["health"].get("severity") not in allowed_severity:
+            raise ValueError("Invalid health.severity in analysis. Please try again.")
         
         # Validate care object
         if not isinstance(data.get("care"), dict):
@@ -185,6 +288,8 @@ Example: {"is_plant": false, "reason": "Image contains a coffee mug, not a plant
         health = PlantHealth(
             status=data["health"]["status"],
             confidence=data["health"]["confidence"],
+            primary_issue=data["health"]["primary_issue"],
+            severity=data["health"]["severity"],
             issues=data["health"].get("issues", []),
             immediate_actions=data["health"].get("immediate_actions", []),
         )
@@ -201,6 +306,7 @@ Example: {"is_plant": false, "reason": "Image contains a coffee mug, not a plant
             plant_id=data["plant_id"],
             scientific_name=data["scientific_name"],
             common_name=data["common_name"],
+            plant_family=data["plant_family"],
             confidence=data["confidence"],
             health=health,
             care=care,
@@ -354,15 +460,26 @@ IMPORTANT: If the image does NOT contain any real plants (e.g., it's a coffee mu
         
         prompt = f"""You are an expert botanist specializing in Indian urban balcony plants.{city_context}
 
+PlantFamily =
+- succulent_dry
+- tropical_foliage
+- flowering
+- herbs_edibles
+- woody_trees
+- ferns_moisture
+
 Analyze this plant image (cropped from a larger photo) and return a JSON object:
 {{
     "plant_id": "lowercase_underscore_name (e.g., monstera_deliciosa)",
     "scientific_name": "Scientific name",
     "common_name": "Common name used in India",
+    "plant_family": "one of the PlantFamily enum values",
     "confidence": 0.0 to 1.0,
     "health": {{
         "status": "healthy" or "stressed" or "unhealthy",
         "confidence": 0.0 to 1.0,
+        "primary_issue": "exactly one from allowed list",
+        "severity": "low" or "medium" or "high",
         "issues": ["list of visible issues if any"],
         "immediate_actions": ["list of actions to take now"]
     }},
@@ -378,6 +495,23 @@ Analyze this plant image (cropped from a larger photo) and return a JSON object:
         "indian_climate_tips": ["specific tips for Indian balcony conditions"]
     }}
 }}
+
+Choose plant_family based on care behavior, not botanical taxonomy.
+If unsure, select the closest match based on watering, light, and growth patterns.
+Always choose one family from the provided enum.
+
+Allowed primary_issue values (choose exactly one; must match articles.issue_tags):
+overwatering, underwatering, root_rot, root_stress, poor_drainage, dry_soil, water_imbalance,
+low_light, light_excess, direct_sunlight, sun_stress, light_instability,
+yellow_leaves, leaf_drooping, leaf_curling, leaf_spots, leaf_shedding, leaf_softness, leaf_crisping, leaf_wrinkling,
+heat_stress, cold_stress, low_humidity, high_humidity, airflow_issues, environmental_change, relocation_stress, air_pollution,
+bud_drop, early_flower_drop, no_blooming, flowering_cycle_disruption,
+leggy_growth, bolting, loss_of_flavor, slow_edible_growth,
+slow_growth, establishment_stress, fragile_recovery
+
+Choose exactly one primary_issue from the allowed list.
+Prefer the underlying cause over visible symptoms.
+If uncertain, choose a broader category rather than a specific one (e.g., water_imbalance, environmental_change).
 
 Consider Indian climate challenges: intense heat (40°C+), monsoons, humidity, dust, and pollution.
 
@@ -464,7 +598,7 @@ Return ONLY the JSON object, no other text."""
 
         
         # Validate required fields are present
-        required_fields = ["plant_id", "scientific_name", "common_name", "confidence", "health", "care"]
+        required_fields = ["plant_id", "scientific_name", "common_name", "plant_family", "confidence", "health", "care"]
         missing_fields = [field for field in required_fields if field not in data]
         if missing_fields:
             raise ValueError(f"Incomplete plant analysis - missing fields: {', '.join(missing_fields)}. Try taking a clearer photo of the plant.")
@@ -472,11 +606,86 @@ Return ONLY the JSON object, no other text."""
         # Validate health object
         if not isinstance(data.get("health"), dict):
             raise ValueError("Invalid health data in analysis. Please try again with a clearer photo.")
-        
-        health_required = ["status", "confidence"]
+
+        allowed_plant_families = {
+            "succulent_dry",
+            "tropical_foliage",
+            "flowering",
+            "herbs_edibles",
+            "woody_trees",
+            "ferns_moisture",
+        }
+        plant_family = data.get("plant_family")
+        if not plant_family:
+            raise ValueError("Missing plant_family in analysis. Try again with a clearer photo.")
+        if plant_family not in allowed_plant_families:
+            raise ValueError(f"Invalid plant_family '{plant_family}'. Please try again with a clearer photo.")
+
+        health_required = ["status", "confidence", "primary_issue", "severity"]
         health_missing = [field for field in health_required if field not in data["health"]]
         if health_missing:
             raise ValueError(f"Incomplete health analysis - missing: {', '.join(health_missing)}. Try a clearer photo.")
+
+        allowed_primary_issues = {
+            # 🌱 Water & Roots
+            "overwatering",
+            "underwatering",
+            "root_rot",
+            "root_stress",
+            "poor_drainage",
+            "dry_soil",
+            "water_imbalance",
+            # ☀️ Light
+            "low_light",
+            "light_excess",
+            "direct_sunlight",
+            "sun_stress",
+            "light_instability",
+            # 🌿 Leaves & Growth Symptoms
+            "yellow_leaves",
+            "leaf_drooping",
+            "leaf_curling",
+            "leaf_spots",
+            "leaf_shedding",
+            "leaf_softness",
+            "leaf_crisping",
+            "leaf_wrinkling",
+            # 🌡 Environment & Stress
+            "heat_stress",
+            "cold_stress",
+            "low_humidity",
+            "high_humidity",
+            "airflow_issues",
+            "environmental_change",
+            "relocation_stress",
+            "air_pollution",
+            # 🌸 Flowering-specific
+            "bud_drop",
+            "early_flower_drop",
+            "no_blooming",
+            "flowering_cycle_disruption",
+            # 🌿 Herbs & Edibles
+            "leggy_growth",
+            "bolting",
+            "loss_of_flavor",
+            "slow_edible_growth",
+            # 🌴 Trees, Woody & Ferns
+            "slow_growth",
+            "establishment_stress",
+            "fragile_recovery",
+        }
+        primary_issue = data["health"].get("primary_issue")
+        if primary_issue not in allowed_primary_issues:
+            raise ValueError(
+                f"Invalid health.primary_issue '{primary_issue}'. Please try again with a clearer photo."
+            )
+
+        allowed_health_status = {"healthy", "stressed", "unhealthy"}
+        if data["health"].get("status") not in allowed_health_status:
+            raise ValueError("Invalid health.status in analysis. Please try again.")
+        allowed_severity = {"low", "medium", "high"}
+        if data["health"].get("severity") not in allowed_severity:
+            raise ValueError("Invalid health.severity in analysis. Please try again.")
         
         # Validate care object
         if not isinstance(data.get("care"), dict):
@@ -486,6 +695,8 @@ Return ONLY the JSON object, no other text."""
         health = PlantHealth(
             status=data["health"]["status"],
             confidence=data["health"]["confidence"],
+            primary_issue=data["health"]["primary_issue"],
+            severity=data["health"]["severity"],
             issues=data["health"].get("issues", []),
             immediate_actions=data["health"].get("immediate_actions", []),
         )
@@ -502,8 +713,8 @@ Return ONLY the JSON object, no other text."""
             plant_id=data["plant_id"],
             scientific_name=data["scientific_name"],
             common_name=data["common_name"],
+            plant_family=data["plant_family"],
             confidence=data["confidence"],
             health=health,
             care=care,
         )
-

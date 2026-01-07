@@ -3,6 +3,7 @@
 import base64
 from datetime import datetime, timedelta
 from typing import Optional, List
+from uuid import uuid4
 from bson import ObjectId
 
 from app.core.database import Database
@@ -66,9 +67,92 @@ class PlantService:
         
         if last_watered:
             return last_watered + timedelta(days=days)
-        else:
-            # If never watered, due now
-            return datetime.utcnow()
+        # If never watered, default to created_at baseline (prevents immediate "overdue" on new plants)
+        created_at = plant_doc.get("created_at") or datetime.utcnow()
+        return created_at + timedelta(days=days)
+
+    @staticmethod
+    def _normalize_action(action: str) -> str:
+        return " ".join((action or "").strip().lower().split())
+
+    @classmethod
+    def _merge_immediate_fixes(cls, existing: List[dict], new_actions: List[str]) -> List[dict]:
+        """
+        Merge new immediate action strings into existing immediate_fixes.
+        - Never removes older fixes.
+        - Avoids duplicates (case/whitespace-insensitive).
+        - Preserves is_done state.
+        """
+        existing = list(existing or [])
+        seen = {cls._normalize_action((f or {}).get("action")) for f in existing if (f or {}).get("action")}
+
+        for action in (new_actions or []):
+            norm = cls._normalize_action(action)
+            if not norm or norm in seen:
+                continue
+            existing.append(
+                {
+                    "id": str(uuid4()),
+                    "action": action.strip(),
+                    "is_done": False,
+                    "created_at": datetime.utcnow(),
+                    "completed_at": None,
+                }
+            )
+            seen.add(norm)
+        return existing
+
+    @classmethod
+    async def _ensure_immediate_fixes(cls, plant_doc: dict) -> dict:
+        """
+        Backfill immediate_fixes from legacy health_immediate_actions for older plants.
+        Persists the migration once so IDs are stable for checklist toggles.
+        """
+        if not plant_doc or not isinstance(plant_doc, dict) or not plant_doc.get("_id"):
+            return plant_doc
+
+        if plant_doc.get("immediate_fixes"):
+            return plant_doc
+
+        legacy = plant_doc.get("health_immediate_actions") or []
+        if not legacy:
+            return plant_doc
+
+        fixes = cls._merge_immediate_fixes([], legacy)
+        plant_doc["immediate_fixes"] = fixes
+
+        try:
+            await cls._get_plants_collection().update_one({"_id": plant_doc["_id"]}, {"$set": {"immediate_fixes": fixes}})
+        except Exception:
+            pass
+
+        return plant_doc
+
+    @staticmethod
+    def _compute_health_score(status: Optional[str], severity: Optional[str]) -> Optional[int]:
+        """
+        Store a user-facing health score (0–100) derived from status/severity.
+        We keep it out of the UI for now, but store it for future use.
+        """
+        if not status:
+            return None
+
+        base_by_status = {
+            "healthy": 90,
+            "stressed": 65,
+            "unhealthy": 40,
+        }
+        base = base_by_status.get(status)
+        if base is None:
+            return None
+
+        severity_delta = {
+            "low": 5,
+            "medium": 0,
+            "high": -10,
+        }.get(severity or "medium", 0)
+
+        return max(0, min(100, int(base + severity_delta)))
     
     # ==================== User Plants CRUD ====================
     
@@ -105,7 +189,7 @@ class PlantService:
             "image_url": plant_data.image_url,
             "health_status": plant_data.health_status,
             "notes": plant_data.notes,
-            "last_watered": None,
+            "last_watered": plant_data.last_watered,
             "watering_streak": 0,
             "created_at": datetime.utcnow(),
             # Care reminder fields
@@ -116,11 +200,23 @@ class PlantService:
 
         # Persist latest health details if available (from /analyze)
         if plant_data.health:
+            confidence_bucket = cls._confidence_bucket(plant_data.confidence, plant_data.health.confidence)
+            immediate_fixes = cls._merge_immediate_fixes(
+                plant_doc.get("immediate_fixes", []),
+                plant_data.health.immediate_actions,
+            )
+            health_score = cls._compute_health_score(plant_data.health.status, plant_data.health.severity)
             plant_doc.update(
                 {
                     "health_confidence": plant_data.health.confidence,
+                    "health_primary_issue": plant_data.health.primary_issue,
+                    "health_severity": plant_data.health.severity,
+                    "confidence_bucket": confidence_bucket,
+                    "plant_family": plant_data.plant_family,
                     "health_issues": plant_data.health.issues,
                     "health_immediate_actions": plant_data.health.immediate_actions,
+                    "immediate_fixes": immediate_fixes,
+                    "health_score": health_score,
                 }
             )
         
@@ -136,6 +232,7 @@ class PlantService:
                     health_status=plant_data.health.status,
                     confidence=plant_data.health.confidence,
                     issues=plant_data.health.issues,
+                    immediate_actions=plant_data.health.immediate_actions,
                     image_url=plant_data.image_url,
                 )
             except Exception:
@@ -182,6 +279,21 @@ class PlantService:
 
         return cls._doc_to_response(plant_doc)
 
+    @staticmethod
+    def _confidence_bucket(plant_confidence: Optional[float], health_confidence: Optional[float]) -> str:
+        """
+        Bucket for downstream systems.
+        Uses plant identification confidence when available; falls back to health confidence.
+        """
+        value = plant_confidence if isinstance(plant_confidence, (int, float)) else health_confidence
+        if value is None:
+            return "low"
+        if value >= 0.85:
+            return "high"
+        if value >= 0.65:
+            return "medium"
+        return "low"
+
     
     @classmethod
     async def get_user_plants(cls, user_id: str, skip: int = 0, limit: int = 50) -> List[PlantResponse]:
@@ -189,7 +301,10 @@ class PlantService:
         collection = cls._get_plants_collection()
         cursor = collection.find({"user_id": user_id}).sort("created_at", -1).skip(skip).limit(limit)
         plants = await cursor.to_list(length=limit)
-        return [cls._doc_to_response(p) for p in plants]
+        migrated = []
+        for p in plants:
+            migrated.append(await cls._ensure_immediate_fixes(p))
+        return [cls._doc_to_response(p) for p in migrated]
     
     @classmethod
     async def get_plants_needing_water(cls, user_id: str) -> List[PlantResponse]:
@@ -225,7 +340,8 @@ class PlantService:
         
         if not plant:
             raise NotFoundException("Plant not found")
-        
+
+        plant = await cls._ensure_immediate_fixes(plant)
         return cls._doc_to_response(plant)
     
     @classmethod
@@ -250,6 +366,38 @@ class PlantService:
             raise NotFoundException("Plant not found")
         
         return cls._doc_to_response(result)
+
+    @classmethod
+    async def update_immediate_fix_status(
+        cls, plant_id: str, user_id: str, fix_id: str, is_done: bool
+    ) -> PlantResponse:
+        """Toggle an immediate fix's done state (plant owner only)."""
+        object_id = cls._validate_object_id(plant_id)
+        collection = cls._get_plants_collection()
+
+        plant = await collection.find_one({"_id": object_id, "user_id": user_id})
+        if not plant:
+            raise NotFoundException("Plant not found")
+
+        fixes = plant.get("immediate_fixes") or []
+        if not isinstance(fixes, list):
+            raise NotFoundException("Immediate fix not found")
+
+        found = False
+        now = datetime.utcnow()
+        for fix in fixes:
+            if isinstance(fix, dict) and str(fix.get("id")) == str(fix_id):
+                fix["is_done"] = bool(is_done)
+                fix["completed_at"] = now if is_done else None
+                found = True
+                break
+
+        if not found:
+            raise NotFoundException("Immediate fix not found")
+
+        await collection.update_one({"_id": object_id}, {"$set": {"immediate_fixes": fixes}})
+        plant["immediate_fixes"] = fixes
+        return cls._doc_to_response(plant)
     
     @classmethod
     async def delete_plant(cls, plant_id: str, user_id: str) -> bool:
@@ -321,6 +469,17 @@ class PlantService:
                 await AchievementService.check_and_unlock_achievements(user_id)
             except Exception:
                 pass  # Don't fail watering if achievement check fails
+
+            try:
+                from app.plants.events_service import EventService, EventType
+                await EventService.log_event(
+                    user_id=user_id,
+                    event_type=EventType.PLANT_WATERED,
+                    plant_id=plant_id,
+                    metadata={"last_watered": now},
+                )
+            except Exception:
+                pass
         
         return cls._doc_to_response(result)
     
@@ -506,6 +665,9 @@ class PlantService:
         if not plant:
             raise NotFoundException("Plant not found")
 
+        # Ensure legacy immediate actions are migrated before we append new ones.
+        plant = await cls._ensure_immediate_fixes(plant)
+
         min_days = cls._min_days_between_snapshots()
         next_allowed_at = await cls.get_next_allowed_snapshot_at(plant_id, user_id)
         if min_days > 0 and next_allowed_at and datetime.utcnow() < next_allowed_at:
@@ -541,6 +703,7 @@ class PlantService:
         )
 
         health = analysis.health
+        confidence_bucket = cls._confidence_bucket(analysis.confidence, health.confidence)
 
         # Save snapshot and update plant latest health fields
         snapshot = await cls.save_health_snapshot(
@@ -560,12 +723,51 @@ class PlantService:
                 "$set": {
                     "health_status": health.status,
                     "health_confidence": health.confidence,
+                    "health_primary_issue": health.primary_issue,
+                    "health_severity": health.severity,
+                    "confidence_bucket": confidence_bucket,
+                    "plant_family": analysis.plant_family or plant.get("plant_family"),
                     "health_issues": health.issues,
                     "health_immediate_actions": health.immediate_actions,
+                    "immediate_fixes": cls._merge_immediate_fixes(
+                        plant.get("immediate_fixes", []),
+                        health.immediate_actions,
+                    ),
+                    "health_score": cls._compute_health_score(health.status, health.severity),
                     "last_health_check": datetime.utcnow(),
                 }
             },
         )
+
+        try:
+            from app.plants.events_service import EventService, EventType
+            await EventService.log_event(
+                user_id=user_id,
+                event_type=EventType.PROGRESS_PHOTO,
+                plant_id=plant_id,
+                metadata={
+                    "image_key": image_key,
+                    "thumbnail_key": thumb_key,
+                    "health_status": health.status,
+                },
+            )
+        except Exception:
+            pass
+
+        try:
+            from app.plants.events_service import EventService, EventType
+            await EventService.log_event(
+                user_id=user_id,
+                event_type=EventType.HEALTH_CHECK,
+                plant_id=plant_id,
+                metadata={
+                    "health_status": health.status,
+                    "issues": health.issues,
+                    "primary_issue": health.primary_issue,
+                },
+            )
+        except Exception:
+            pass
 
         snapshot["next_allowed_at"] = await cls.get_next_allowed_snapshot_at(plant_id, user_id)
         snapshot["min_days_between_snapshots"] = min_days
@@ -606,7 +808,7 @@ class PlantService:
     def _doc_to_response(cls, doc: dict) -> PlantResponse:
         """Convert MongoDB document to PlantResponse."""
         # Import here to avoid circular import
-        from app.plants.models import CareScheduleStored, WateringSchedule
+        from app.plants.models import CareScheduleStored, WateringSchedule, ImmediateFixItem
         
         # Parse care_schedule if exists
         care_schedule = None
@@ -625,6 +827,22 @@ class PlantService:
                 indian_climate_tips=care_data.get("indian_climate_tips", [])
             )
         
+        immediate_fixes = []
+        for fix in (doc.get("immediate_fixes") or []):
+            if not isinstance(fix, dict):
+                continue
+            if not fix.get("id") or not fix.get("action") or not fix.get("created_at"):
+                continue
+            immediate_fixes.append(
+                ImmediateFixItem(
+                    id=str(fix["id"]),
+                    action=str(fix["action"]),
+                    is_done=bool(fix.get("is_done", False)),
+                    created_at=fix["created_at"],
+                    completed_at=fix.get("completed_at"),
+                )
+            )
+
         return PlantResponse(
             id=str(doc["_id"]),
             user_id=doc["user_id"],
@@ -635,8 +853,14 @@ class PlantService:
             image_url=doc.get("image_url"),
             health_status=doc.get("health_status", "unknown"),
             health_confidence=doc.get("health_confidence"),
+            health_primary_issue=doc.get("health_primary_issue"),
+            health_severity=doc.get("health_severity"),
+            confidence_bucket=doc.get("confidence_bucket"),
+            plant_family=doc.get("plant_family"),
+            health_score=doc.get("health_score"),
             health_issues=doc.get("health_issues", []),
             health_immediate_actions=doc.get("health_immediate_actions", []),
+            immediate_fixes=immediate_fixes,
             notes=doc.get("notes"),
             last_watered=doc.get("last_watered"),
             watering_streak=doc.get("watering_streak", 0),

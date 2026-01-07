@@ -20,11 +20,13 @@ from app.plants.models import (
     HealthSnapshot,
     HealthTimelineResponse,
     HealthSnapshotCreateRequest,
+    ImmediateFixUpdateRequest,
 )
 from app.plants.service import PlantService
 from app.plants.openai_service import OpenAIService
 from app.plants.video_service import VideoService, ImageService, VideoProcessingError
 from app.core.aws import S3Service
+from app.plants.events_service import EventService
 
 
 router = APIRouter(prefix="/plants", tags=["Plants"])
@@ -422,3 +424,31 @@ async def delete_health_snapshot(
 ):
     """Delete a health snapshot (also deletes S3 objects)."""
     await PlantService.delete_health_snapshot(plant_id, current_user["id"], snapshot_id)
+
+
+@router.patch("/{plant_id}/immediate-fixes/{fix_id}", response_model=PlantResponse)
+async def update_immediate_fix(
+    plant_id: str,
+    fix_id: str,
+    request: ImmediateFixUpdateRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Mark an immediate fix as done/undone (plant owner only)."""
+    plant = await PlantService.update_immediate_fix_status(
+        plant_id=plant_id,
+        user_id=current_user["id"],
+        fix_id=fix_id,
+        is_done=request.is_done,
+    )
+    return add_signed_url_to_plant(plant.dict() if hasattr(plant, "dict") else dict(plant))
+
+
+@router.get("/{plant_id}/events")
+async def get_plant_events(
+    plant_id: str,
+    limit: int = Query(default=50, le=200),
+    current_user: dict = Depends(get_current_user),
+):
+    """Get recent plant events (water, photos, health checks)."""
+    events = await EventService.get_user_events(user_id=current_user["id"], plant_id=plant_id, limit=limit)
+    return {"events": events}

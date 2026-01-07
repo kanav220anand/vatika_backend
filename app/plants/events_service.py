@@ -11,6 +11,7 @@ class EventType:
     """Event type constants."""
     PLANT_WATERED = "plant_watered"
     HEALTH_CHECK = "health_check"
+    PROGRESS_PHOTO = "progress_photo"
     REMINDER_SENT = "reminder_sent"
     PLANT_ADDED = "plant_added"
     PLANT_DELETED = "plant_deleted"
@@ -54,6 +55,7 @@ class EventService:
         cls,
         user_id: str,
         event_type: Optional[str] = None,
+        plant_id: Optional[str] = None,
         limit: int = 50
     ) -> list:
         """Get recent events for a user."""
@@ -62,6 +64,8 @@ class EventService:
         query = {"user_id": user_id}
         if event_type:
             query["event_type"] = event_type
+        if plant_id:
+            query["plant_id"] = plant_id
         
         cursor = collection.find(query).sort("created_at", -1).limit(limit)
         
