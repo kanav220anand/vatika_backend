@@ -40,6 +40,10 @@ class NotificationResponse(BaseModel):
     priority: str
     title: str
     message: str
+    icon_url: Optional[str] = Field(
+        default=None,
+        description="Public URL for notification icon (expanded using S3_BASE_URL).",
+    )
     plant_id: Optional[str] = None
     plant_name: Optional[str] = None
     action_url: Optional[str] = None

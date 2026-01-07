@@ -1,6 +1,7 @@
 """AWS S3 Service."""
 
 import logging
+import re
 import boto3
 from botocore.exceptions import ClientError
 from app.core.config import get_settings
@@ -37,6 +38,17 @@ class S3Service:
         """Get S3 client."""
         return self._s3_client
 
+    @staticmethod
+    def _validated_bucket_name() -> str:
+        bucket = (settings.AWS_S3_BUCKET or "").strip()
+        # Prevent boto3 raising a cryptic "Invalid bucket name" error when env is misconfigured.
+        if not bucket:
+            raise ValueError("AWS_S3_BUCKET is not configured.")
+        # https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html
+        if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", bucket):
+            raise ValueError(f"Invalid AWS_S3_BUCKET value '{bucket}'.")
+        return bucket
+
     def generate_presigned_post(self, object_name: str, file_type: str, expiration=3600):
         """
         Generate a presigned URL/fields for POST upload.
@@ -48,8 +60,9 @@ class S3Service:
             raise ValueError("AWS S3 credentials not configured.")
 
         try:
+            bucket = self._validated_bucket_name()
             response = self.client.generate_presigned_post(
-                Bucket=settings.AWS_S3_BUCKET,
+                Bucket=bucket,
                 Key=object_name,
                 Fields={"Content-Type": file_type},
                 Conditions=[
@@ -72,10 +85,11 @@ class S3Service:
             raise ValueError("AWS S3 credentials not configured.")
 
         try:
+            bucket = self._validated_bucket_name()
             url = self.client.generate_presigned_url(
                 ClientMethod='put_object',
                 Params={
-                    'Bucket': settings.AWS_S3_BUCKET,
+                    'Bucket': bucket,
                     'Key': object_name,
                     'ContentType': file_type
                 },
@@ -92,10 +106,11 @@ class S3Service:
             raise ValueError("AWS S3 credentials not configured.")
 
         try:
+            bucket = self._validated_bucket_name()
             url = self.client.generate_presigned_url(
                 ClientMethod='get_object',
                 Params={
-                    'Bucket': settings.AWS_S3_BUCKET,
+                    'Bucket': bucket,
                     'Key': object_name
                 },
                 ExpiresIn=expiration
@@ -118,7 +133,8 @@ class S3Service:
 
         try:
             file_stream = BytesIO()
-            self.client.download_fileobj(settings.AWS_S3_BUCKET, object_name, file_stream)
+            bucket = self._validated_bucket_name()
+            self.client.download_fileobj(bucket, object_name, file_stream)
             file_stream.seek(0)
             return base64.b64encode(file_stream.read()).decode('utf-8')
         except ClientError as e:
@@ -130,15 +146,17 @@ class S3Service:
         Get the public URL for an S3 object.
         Assumes bucket has public read access or CloudFront is configured.
         """
-        return f"https://{settings.AWS_S3_BUCKET}.s3.{settings.AWS_REGION}.amazonaws.com/{object_name}"
+        bucket = self._validated_bucket_name()
+        return f"https://{bucket}.s3.{settings.AWS_REGION}.amazonaws.com/{object_name}"
 
     def upload_bytes(self, object_name: str, data: bytes, content_type: str = "image/jpeg") -> None:
         """Upload raw bytes to S3."""
         if not self.client:
             raise ValueError("AWS S3 credentials not configured.")
         try:
+            bucket = self._validated_bucket_name()
             self.client.put_object(
-                Bucket=settings.AWS_S3_BUCKET,
+                Bucket=bucket,
                 Key=object_name,
                 Body=data,
                 ContentType=content_type,
@@ -152,8 +170,9 @@ class S3Service:
         if not self.client:
             raise ValueError("AWS S3 credentials not configured.")
         try:
+            bucket = self._validated_bucket_name()
             self.client.delete_object(
-                Bucket=settings.AWS_S3_BUCKET,
+                Bucket=bucket,
                 Key=object_name,
             )
         except ClientError as e:

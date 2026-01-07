@@ -52,6 +52,8 @@ class UserResponse(BaseModel):
     balcony_orientation: Optional[str] = None
     auth_provider: str = "email"  # "email" | "google" | "apple"
     profile_picture: Optional[str] = None
+    notifications_enabled: bool = True
+    profile_visibility: str = Field(default="public", pattern="^(public|private)$")
     onboarding_status: str = "never_shown"  # never_shown | shown | skipped | finished
     total_achievement_score: int = 0
     level: int = 1
@@ -68,6 +70,8 @@ class UserUpdate(BaseModel):
         None,
         pattern="^(north|south|east|west|north-east|north-west|south-east|south-west)$"
     )
+    notifications_enabled: Optional[bool] = None
+    profile_visibility: Optional[str] = Field(default=None, pattern="^(public|private)$")
     onboarding_status: Optional[str] = Field(
         None,
         pattern="^(never_shown|shown|skipped|finished)$"

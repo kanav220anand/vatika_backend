@@ -27,6 +27,57 @@ class OpenAIService:
             cls._instance.client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
             cls._instance.model = settings.OPENAI_MODEL
         return cls._instance
+
+    @staticmethod
+    def _normalize_primary_issue(
+        primary_issue: Optional[str],
+        *,
+        issues: Optional[List[str]],
+        health_status: Optional[str],
+        health_confidence: Optional[float],
+        allowed_primary_issues: set,
+    ) -> str:
+        """
+        Ensure `primary_issue` is one of the allowed enum values.
+
+        LLM occasionally returns placeholders like "none" — we map those into safe, broad categories
+        so the analysis doesn't hard-fail for users.
+        """
+        raw = (primary_issue or "").strip().lower()
+        raw = re.sub(r"\s+", "_", raw)
+        if raw in allowed_primary_issues:
+            return raw
+
+        issue_text = " ".join([str(x).lower() for x in (issues or [])])
+
+        # Symptom keyword fallbacks (deterministic)
+        if any(k in issue_text for k in ["curl", "curling"]):
+            return "leaf_curling"
+        if any(k in issue_text for k in ["droop", "drooping", "wilting"]):
+            return "leaf_drooping"
+        if "yellow" in issue_text:
+            return "yellow_leaves"
+        if any(k in issue_text for k in ["spot", "spots"]):
+            return "leaf_spots"
+        if any(k in issue_text for k in ["wrinkl", "wrinkle"]):
+            return "leaf_wrinkling"
+        if any(k in issue_text for k in ["soft", "mushy"]):
+            return "leaf_softness"
+        if any(k in issue_text for k in ["crisp", "crispy", "dry_tip", "dry tips", "brown edge", "brown edges"]):
+            return "leaf_crisping"
+        if any(k in issue_text for k in ["shed", "shedding", "dropping leaves"]):
+            return "leaf_shedding"
+        if any(k in issue_text for k in ["sun", "burn", "scorch"]):
+            return "sun_stress"
+
+        # If confidence is low or the model returned a placeholder, pick a broad v1-safe issue.
+        conf = float(health_confidence) if isinstance(health_confidence, (int, float)) else 0.0
+        status = (health_status or "").strip().lower()
+        if conf < 0.65:
+            return "environmental_change" if status in {"stressed", "unhealthy"} else "water_imbalance"
+
+        # Default broad category that won't break downstream selector logic.
+        return "water_imbalance"
     
     async def analyze_plant(
         self, 
@@ -267,11 +318,13 @@ Example: {"is_plant": false, "reason": "Image contains a coffee mug, not a plant
             "establishment_stress",
             "fragile_recovery",
         }
-        primary_issue = data["health"].get("primary_issue")
-        if primary_issue not in allowed_primary_issues:
-            raise ValueError(
-                f"Invalid health.primary_issue '{primary_issue}'. Please try again with a clearer photo."
-            )
+        data["health"]["primary_issue"] = self._normalize_primary_issue(
+            data["health"].get("primary_issue"),
+            issues=data["health"].get("issues", []),
+            health_status=data["health"].get("status"),
+            health_confidence=data["health"].get("confidence"),
+            allowed_primary_issues=allowed_primary_issues,
+        )
 
         allowed_health_status = {"healthy", "stressed", "unhealthy"}
         if data["health"].get("status") not in allowed_health_status:
@@ -674,11 +727,13 @@ Return ONLY the JSON object, no other text."""
             "establishment_stress",
             "fragile_recovery",
         }
-        primary_issue = data["health"].get("primary_issue")
-        if primary_issue not in allowed_primary_issues:
-            raise ValueError(
-                f"Invalid health.primary_issue '{primary_issue}'. Please try again with a clearer photo."
-            )
+        data["health"]["primary_issue"] = self._normalize_primary_issue(
+            data["health"].get("primary_issue"),
+            issues=data["health"].get("issues", []),
+            health_status=data["health"].get("status"),
+            health_confidence=data["health"].get("confidence"),
+            allowed_primary_issues=allowed_primary_issues,
+        )
 
         allowed_health_status = {"healthy", "stressed", "unhealthy"}
         if data["health"].get("status") not in allowed_health_status:

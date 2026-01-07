@@ -88,6 +88,7 @@ class PlantUpdate(BaseModel):
     health_status: Optional[str] = None
     notes: Optional[str] = None
     image_url: Optional[str] = None
+    reminders_enabled: Optional[bool] = None
 
 
 class ImmediateFixItem(BaseModel):
@@ -134,6 +135,10 @@ class PlantResponse(BaseModel):
     reminders_enabled: bool = True
     next_water_date: Optional[datetime] = None  # Calculated field
     last_health_check: Optional[datetime] = None
+    last_event_at: Optional[datetime] = Field(
+        default=None,
+        description="Most recent plant event time (water/photo/health/etc.)",
+    )
 
 
 # ==================== Multi-Plant Detection Models ====================

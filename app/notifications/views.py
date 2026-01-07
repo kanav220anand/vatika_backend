@@ -73,6 +73,15 @@ async def mark_notification_read(
         raise AppException(f"Failed to mark notification as read: {str(e)}")
 
 
+@router.patch("/{notification_id}/read", response_model=NotificationResponse)
+async def mark_notification_read_patch(
+    notification_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """PATCH alias for marking a notification as read (frontend compatibility)."""
+    return await mark_notification_read(notification_id, current_user)
+
+
 @router.post("/read-all")
 async def mark_all_read(
     current_user: dict = Depends(get_current_user)
@@ -80,6 +89,14 @@ async def mark_all_read(
     """Mark all notifications as read."""
     count = await NotificationService.mark_all_as_read(current_user["id"])
     return {"marked_read": count}
+
+
+@router.patch("/read-all")
+async def mark_all_read_patch(
+    current_user: dict = Depends(get_current_user)
+):
+    """PATCH alias for marking all notifications as read (frontend compatibility)."""
+    return await mark_all_read(current_user)
 
 
 @router.delete("/{notification_id}", status_code=status.HTTP_204_NO_CONTENT)

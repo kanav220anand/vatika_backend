@@ -6,6 +6,7 @@ from bson import ObjectId
 
 from app.core.database import Database
 from app.core.exceptions import NotFoundException
+from app.core.assets import public_asset_url
 from app.notifications.models import (
     NotificationCreate,
     NotificationResponse,
@@ -16,6 +17,53 @@ from app.notifications.models import (
 
 class NotificationService:
     """Handles notification-related database operations."""
+
+    _ICON_PATHS = {
+        "alert": "icons/notif_attention.svg",
+        "info": "icons/notif_info.svg",
+        "progress": "icons/notif_progress.svg",
+        "reminder": "icons/notif_reminder.svg",
+        "task": "icons/notif_task.svg",
+        "water": "icons/notif_water.svg",
+    }
+
+    @classmethod
+    def _icon_path_for_notification_type(cls, notification_type: str) -> str:
+        """
+        Map notification types to S3 icon paths.
+
+        Rules provided:
+        - alert -> icons/notif_attention.svg
+        - info -> icons/notif_info.svg
+        - progress -> icons/notif_progress.svg
+        - reminders -> icons/notif_reminder.svg
+        - task -> icons/notif_task.svg
+        - water -> icons/notif_water.svg
+        """
+        t = (notification_type or "").strip().lower()
+        if not t:
+            return cls._ICON_PATHS["info"]
+
+        # First, handle known v1 types explicitly.
+        if t == NotificationType.WATER_REMINDER.value:
+            return cls._ICON_PATHS["water"]
+        if t == NotificationType.ACTION_REQUIRED.value:
+            return cls._ICON_PATHS["task"]
+        if t in {NotificationType.HEALTH_ALERT.value, NotificationType.WEATHER_ALERT.value}:
+            return cls._ICON_PATHS["alert"]
+
+        # Heuristics for future/extended types (keeps old data working).
+        if "water" in t:
+            return cls._ICON_PATHS["water"]
+        if "remind" in t:
+            return cls._ICON_PATHS["reminder"]
+        if "progress" in t or "achieve" in t or "level" in t:
+            return cls._ICON_PATHS["progress"]
+        if "task" in t or "action" in t:
+            return cls._ICON_PATHS["task"]
+        if "alert" in t or "health" in t or "weather" in t:
+            return cls._ICON_PATHS["alert"]
+        return cls._ICON_PATHS["info"]
     
     @staticmethod
     def _get_collection():
@@ -38,13 +86,15 @@ class NotificationService:
     async def create_notification(cls, data: NotificationCreate) -> NotificationResponse:
         """Create a new notification."""
         collection = cls._get_collection()
-        
+
+        icon_path = cls._icon_path_for_notification_type(data.notification_type.value)
         doc = {
             "user_id": data.user_id,
             "notification_type": data.notification_type.value,
             "priority": data.priority.value,
             "title": data.title,
             "message": data.message,
+            "icon_path": icon_path,
             "plant_id": data.plant_id,
             "action_url": data.action_url,
             "is_read": False,
@@ -246,6 +296,15 @@ class NotificationService:
         Check all user's plants and generate watering reminders if needed.
         Called periodically or when user opens the app.
         """
+        # Respect global user preference.
+        try:
+            user = await Database.get_collection("users").find_one({"_id": ObjectId(user_id)}, {"notifications_enabled": 1})
+            if user and user.get("notifications_enabled") is False:
+                return []
+        except Exception:
+            # If the user lookup fails, don't block reminders.
+            pass
+
         plants_collection = cls._get_plants_collection()
         notifications = []
         
@@ -277,6 +336,10 @@ class NotificationService:
     @staticmethod
     def _doc_to_response(doc: dict) -> NotificationResponse:
         """Convert MongoDB document to NotificationResponse."""
+        icon_path = doc.get("icon_path")
+        if not icon_path:
+            # Back-compat for old docs created before icon support.
+            icon_path = NotificationService._icon_path_for_notification_type(doc.get("notification_type", ""))
         return NotificationResponse(
             id=str(doc["_id"]),
             user_id=doc["user_id"],
@@ -284,6 +347,7 @@ class NotificationService:
             priority=doc["priority"],
             title=doc["title"],
             message=doc["message"],
+            icon_url=public_asset_url(icon_path),
             plant_id=doc.get("plant_id"),
             action_url=doc.get("action_url"),
             is_read=doc.get("is_read", False),

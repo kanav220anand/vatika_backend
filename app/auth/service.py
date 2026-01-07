@@ -55,6 +55,8 @@ class AuthService:
             balcony_orientation=user.get("balcony_orientation"),
             auth_provider=user.get("auth_provider", "email"),
             profile_picture=user.get("profile_picture"),
+            notifications_enabled=bool(user.get("notifications_enabled", True)),
+            profile_visibility=user.get("profile_visibility", "public"),
             onboarding_status=user.get("onboarding_status", "never_shown"),
             total_achievement_score=points,
             level=user_level.level,
@@ -186,6 +188,8 @@ class AuthService:
                 "auth_provider": "google",
                 "google_id": google_user["google_id"],
                 "profile_picture": google_user.get("picture"),
+                "notifications_enabled": True,
+                "profile_visibility": "public",
                 "onboarding_status": "never_shown",
                 "total_achievement_score": 5,  # Welcome bonus
                 "created_at": datetime.utcnow(),
@@ -229,6 +233,8 @@ class AuthService:
             "city": user_data.city,
             "balcony_orientation": user_data.balcony_orientation,
             "auth_provider": "email",
+            "notifications_enabled": True,
+            "profile_visibility": "public",
             "onboarding_status": "never_shown",
             "total_achievement_score": 5,  # Welcome bonus
             "created_at": datetime.utcnow(),
@@ -292,7 +298,14 @@ class AuthService:
         users = cls._get_collection()
         
         # Only allow updating specific fields
-        allowed_fields = {"name", "city", "balcony_orientation", "onboarding_status"}
+        allowed_fields = {
+            "name",
+            "city",
+            "balcony_orientation",
+            "onboarding_status",
+            "notifications_enabled",
+            "profile_visibility",
+        }
         filtered_updates = {k: v for k, v in updates.items() if k in allowed_fields and v is not None}
         
         if filtered_updates:

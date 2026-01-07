@@ -5,6 +5,7 @@ Loads from environment variables / .env file.
 
 from functools import lru_cache
 from pydantic_settings import BaseSettings
+from pydantic import field_validator
 
 
 class Settings(BaseSettings):
@@ -46,9 +47,32 @@ class Settings(BaseSettings):
     # Plant timeline (weekly snapshots)
     # Set to 0 to disable the weekly restriction for testing.
     PLANT_TIMELINE_MIN_DAYS_BETWEEN_SNAPSHOTS: int = 7
-    
+
+    @field_validator(
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_REGION",
+        "AWS_S3_BUCKET",
+        "S3_BASE_URL",
+        mode="before",
+    )
+    @classmethod
+    def _strip_wrapping_quotes(cls, value):
+        if value is None:
+            return value
+        if not isinstance(value, str):
+            return value
+        stripped = value.strip()
+        # Guard against env values accidentally set to a quoted string (e.g. AWS_S3_BUCKET="bucket")
+        if (stripped.startswith('"') and stripped.endswith('"')) or (
+            stripped.startswith("'") and stripped.endswith("'")
+        ):
+            stripped = stripped[1:-1].strip()
+        return stripped
+
     class Config:
-        env_file = ".env"
+        # Allow running from repo root (uses vatika_backend/.env) or from within vatika_backend (uses .env).
+        env_file = (".env", "vatika_backend/.env")
         env_file_encoding = "utf-8"
 
 

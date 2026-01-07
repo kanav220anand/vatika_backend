@@ -4,7 +4,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, Query, status
 
 from app.core.dependencies import get_current_user, get_current_user_optional
-from app.core.exceptions import AppException
+from app.core.exceptions import AppException, BadRequestException
 from app.auth.service import AuthService
 from app.plants.models import (
     PlantAnalysisRequest,
@@ -212,6 +212,8 @@ async def analyze_thumbnail(
         
         return analysis
         
+    except ValueError as e:
+        raise BadRequestException(str(e))
     except Exception as e:
         raise AppException(f"Failed to analyze plant: {str(e)}")
 
@@ -451,4 +453,25 @@ async def get_plant_events(
 ):
     """Get recent plant events (water, photos, health checks)."""
     events = await EventService.get_user_events(user_id=current_user["id"], plant_id=plant_id, limit=limit)
+    # Add signed URLs for any image keys stored in event metadata
+    s3 = S3Service()
+    for e in events:
+        meta = e.get("metadata") or {}
+        if not isinstance(meta, dict):
+            continue
+
+        for key_field, url_field in (("image_key", "image_url"), ("thumbnail_key", "thumbnail_url")):
+            if meta.get(url_field):
+                continue
+            key = meta.get(key_field)
+            if isinstance(key, str) and key:
+                if key.startswith("http://") or key.startswith("https://"):
+                    meta[url_field] = key
+                else:
+                    try:
+                        meta[url_field] = s3.generate_presigned_get_url(key, expiration=3600)
+                    except Exception:
+                        pass
+
+        e["metadata"] = meta
     return {"events": events}

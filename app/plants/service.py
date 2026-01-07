@@ -301,6 +301,7 @@ class PlantService:
         collection = cls._get_plants_collection()
         cursor = collection.find({"user_id": user_id}).sort("created_at", -1).skip(skip).limit(limit)
         plants = await cursor.to_list(length=limit)
+        plants = await cls._attach_last_event_at(user_id, plants)
         migrated = []
         for p in plants:
             migrated.append(await cls._ensure_immediate_fixes(p))
@@ -326,6 +327,38 @@ class PlantService:
                 due_plants.append(cls._doc_to_response(doc))
         
         return due_plants
+
+    @classmethod
+    async def _attach_last_event_at(cls, user_id: str, plant_docs: List[dict]) -> List[dict]:
+        """
+        Attach `last_event_at` onto each plant doc using a single aggregation over `events`.
+
+        Falls back to plant.created_at if no events exist (e.g., older data).
+        """
+        if not plant_docs:
+            return plant_docs
+
+        plant_ids = [str(p.get("_id")) for p in plant_docs if p.get("_id")]
+        if not plant_ids:
+            return plant_docs
+
+        events = Database.get_collection("events")
+        pipeline = [
+            {"$match": {"user_id": user_id, "plant_id": {"$in": plant_ids}}},
+            {"$sort": {"created_at": -1}},
+            {"$group": {"_id": "$plant_id", "created_at": {"$first": "$created_at"}}},
+        ]
+
+        last_event_by_plant = {}
+        async for row in events.aggregate(pipeline):
+            if row and row.get("_id") and row.get("created_at"):
+                last_event_by_plant[str(row["_id"])] = row["created_at"]
+
+        for p in plant_docs:
+            pid = str(p.get("_id")) if p.get("_id") else None
+            p["last_event_at"] = last_event_by_plant.get(pid) or p.get("created_at")
+
+        return plant_docs
     
     @classmethod
     async def get_plant_by_id(cls, plant_id: str, user_id: str) -> PlantResponse:
@@ -868,5 +901,6 @@ class PlantService:
             care_schedule=care_schedule,
             reminders_enabled=doc.get("reminders_enabled", True),
             next_water_date=cls.calculate_next_water_date(doc),
-            last_health_check=doc.get("last_health_check")
+            last_health_check=doc.get("last_health_check"),
+            last_event_at=doc.get("last_event_at"),
         )
