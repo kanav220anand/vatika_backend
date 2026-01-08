@@ -75,6 +75,19 @@ class Database:
         # `_id` is already uniquely indexed by Mongo; keep this non-unique for compatibility.
         await cls.db.internal_master.create_index("_id")
 
+        # Care Club collections
+        await cls.db.care_club_posts.create_index([("created_at", -1)])
+        await cls.db.care_club_posts.create_index([("author_id", 1)])
+        await cls.db.care_club_posts.create_index([("plant_id", 1)])
+        await cls.db.care_club_posts.create_index([("status", 1), ("created_at", -1)])
+        await cls.db.care_club_posts.create_index([("last_activity_at", -1)])
+
+        await cls.db.care_club_comments.create_index([("post_id", 1), ("created_at", 1)])
+        await cls.db.care_club_comments.create_index([("author_id", 1)])
+
+        await cls.db.care_club_helpful_votes.create_index([("comment_id", 1), ("user_id", 1)], unique=True)
+        await cls.db.care_club_helpful_votes.create_index([("post_id", 1)])
+
     @classmethod
     async def _ensure_internal_master_docs(cls):
         """Seed/ensure internal master data documents exist."""
