@@ -83,16 +83,16 @@ EnrichmentService
 ### API Endpoints
 
 ```
-POST   /api/v1/vatika/care-club/posts                    - Create post
-GET    /api/v1/vatika/care-club/posts                    - List posts (pagination)
-GET    /api/v1/vatika/care-club/posts/{id}               - Get post detail
-POST   /api/v1/vatika/care-club/posts/{id}/resolve       - Resolve post (owner only)
-DELETE /api/v1/vatika/care-club/posts/{id}               - Delete post (owner only)
+POST   /api/v1/vatisha/care-club/posts                    - Create post
+GET    /api/v1/vatisha/care-club/posts                    - List posts (pagination)
+GET    /api/v1/vatisha/care-club/posts/{id}               - Get post detail
+POST   /api/v1/vatisha/care-club/posts/{id}/resolve       - Resolve post (owner only)
+DELETE /api/v1/vatisha/care-club/posts/{id}               - Delete post (owner only)
 
-GET    /api/v1/vatika/care-club/posts/{id}/comments      - List comments
-POST   /api/v1/vatika/care-club/posts/{id}/comments      - Add comment
-DELETE /api/v1/vatika/care-club/posts/{id}/comments/{id} - Delete comment
-POST   /api/v1/vatika/care-club/posts/{id}/comments/{id}/helpful - Toggle helpful
+GET    /api/v1/vatisha/care-club/posts/{id}/comments      - List comments
+POST   /api/v1/vatisha/care-club/posts/{id}/comments      - Add comment
+DELETE /api/v1/vatisha/care-club/posts/{id}/comments/{id} - Delete comment
+POST   /api/v1/vatisha/care-club/posts/{id}/comments/{id}/helpful - Toggle helpful
 ```
 
 ### Pagination
@@ -173,4 +173,3 @@ python scripts/seed_care_club.py
 ```
 
 Requires existing users and plants in the database.
-

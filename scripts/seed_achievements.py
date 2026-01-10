@@ -249,7 +249,7 @@ ACHIEVEMENTS = [
     {
         "id": "early_adopter",
         "name": "Early Adopter",
-        "description": "Welcome to Vatika! You joined our plant care community",
+        "description": "Welcome to Vatisha! You joined our plant care community",
         "icon": "🎉",
         "category": "loyalty",
         "tier": "bronze",

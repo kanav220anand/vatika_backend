@@ -23,6 +23,8 @@ from app.articles import router as articles_router
 from app.care_club import care_club_router
 
 settings = get_settings()
+API_PREFIX = "/api/v1/vatisha"
+LEGACY_API_PREFIX = "/api/v1/vatika"
 
 
 @asynccontextmanager
@@ -62,8 +64,8 @@ Optimized for Indian conditions:
 
     """,
     lifespan=lifespan,
-    docs_url="/api/v1/vatika/docs",
-    redoc_url="/api/v1/vatika/redoc",
+    docs_url=f"{API_PREFIX}/docs",
+    redoc_url=f"{API_PREFIX}/redoc",
 )
 
 # CORS middleware
@@ -76,17 +78,24 @@ app.add_middleware(
 )
 
 # Include routers
-app.include_router(auth_router, prefix="/api/v1/vatika")
-app.include_router(plants_router, prefix="/api/v1/vatika")
-app.include_router(weather_router, prefix="/api/v1/vatika")
-app.include_router(notifications_router, prefix="/api/v1/vatika")
-app.include_router(achievements_router, prefix="/api/v1/vatika")
-app.include_router(gamification_router, prefix="/api/v1/vatika")
-app.include_router(recommended_plants_router, prefix="/api/v1/vatika")
-app.include_router(files_router, prefix="/api/v1/vatika")
-app.include_router(cities_router, prefix="/api/v1/vatika")
-app.include_router(articles_router, prefix="/api/v1/vatika")
-app.include_router(care_club_router, prefix="/api/v1/vatika")
+routers = [
+    auth_router,
+    plants_router,
+    weather_router,
+    notifications_router,
+    achievements_router,
+    gamification_router,
+    recommended_plants_router,
+    files_router,
+    cities_router,
+    articles_router,
+    care_club_router,
+]
+
+for router in routers:
+    app.include_router(router, prefix=API_PREFIX)
+    # Backward compatibility for existing clients (hidden from OpenAPI schema).
+    app.include_router(router, prefix=LEGACY_API_PREFIX, include_in_schema=False)
 
 
 @app.get("/", tags=["Health"])
