@@ -1,7 +1,7 @@
 """Pydantic schemas for recommended plants."""
 
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Literal
 
 
 class RecommendedPlantBase(BaseModel):
@@ -16,6 +16,13 @@ class RecommendedPlantBase(BaseModel):
     description: str
     is_beginner_friendly: bool = True
     order: int = 0
+    # New fields
+    success_rate: Optional[int] = None
+    quick_benefit: Optional[str] = None
+    price_range: Optional[str] = None
+    google_search_term: Optional[str] = None
+    care_tip: Optional[str] = None
+    growth_speed: Optional[str] = None  # "slow", "medium", "fast"
 
 
 class RecommendedPlantResponse(RecommendedPlantBase):
