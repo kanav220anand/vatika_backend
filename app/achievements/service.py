@@ -5,6 +5,7 @@ from typing import List, Dict, Tuple, Optional
 from bson import ObjectId
 
 from app.core.database import Database
+from app.plants.events_service import EventType
 from app.achievements.models import (
     AchievementResponse,
     AchievementsListResponse,
@@ -55,22 +56,76 @@ class AchievementService:
         
         plant_count = len(plants)
         healthy_plants = len([p for p in plants if p.get("health_status") == "healthy"])
-        total_waterings = sum(p.get("watering_streak", 0) for p in plants)
         max_streak = max((p.get("watering_streak", 0) for p in plants), default=0)
         unique_species = len(set(p.get("scientific_name", "") for p in plants if p.get("scientific_name")))
         
         # Get stored cumulative stats
         plants_revived = stored_stats.get("plants_revived", 0) if stored_stats else 0
         all_healthy_days = stored_stats.get("all_healthy_days", 0) if stored_stats else 0
+
+        water_actions_count = (stored_stats or {}).get("water_actions_count")
+        if water_actions_count is None:
+            # Backfill from events as a safe baseline, then persist for future queries.
+            try:
+                events = Database.get_collection("events")
+                water_actions_count = await events.count_documents(
+                    {"user_id": user_id, "event_type": {"$in": [EventType.WATERED, EventType.PLANT_WATERED]}}
+                )
+                await stats_collection.update_one(
+                    {"user_id": user_id},
+                    {
+                        "$set": {"water_actions_count": int(water_actions_count), "updated_at": datetime.utcnow()},
+                        "$setOnInsert": {"user_id": user_id, "created_at": datetime.utcnow()},
+                    },
+                    upsert=True,
+                )
+            except Exception:
+                water_actions_count = 0
+
+        water_on_time_count = int((stored_stats or {}).get("water_on_time_count", 0))
+        water_early_count = int((stored_stats or {}).get("water_early_count", 0))
+        water_late_count = int((stored_stats or {}).get("water_late_count", 0))
         
         return UserStats(
             plant_count=plant_count,
             healthy_plants=healthy_plants,
-            total_waterings=total_waterings,
+            total_waterings=int(water_actions_count or 0),
             max_streak=max_streak,
             unique_species=unique_species,
+            water_actions_count=int(water_actions_count or 0),
+            water_on_time_count=water_on_time_count,
+            water_early_count=water_early_count,
+            water_late_count=water_late_count,
             plants_revived=plants_revived,
             all_healthy_days=all_healthy_days,
+        )
+
+    @classmethod
+    async def increment_watering_stats(cls, user_id: str, timing: Optional[str]) -> None:
+        """
+        Canonical watering counters used for achievements/stats.
+
+        - water_actions_count always increments
+        - one of water_on_time_count / water_early_count / water_late_count increments when timing is known
+        """
+        inc: Dict[str, int] = {"water_actions_count": 1}
+        t = (timing or "").strip().lower()
+        if t == "on_time":
+            inc["water_on_time_count"] = 1
+        elif t == "early":
+            inc["water_early_count"] = 1
+        elif t == "late":
+            inc["water_late_count"] = 1
+
+        stats_collection = cls._get_stats_collection()
+        await stats_collection.update_one(
+            {"user_id": user_id},
+            {
+                "$inc": inc,
+                "$set": {"updated_at": datetime.utcnow()},
+                "$setOnInsert": {"user_id": user_id, "created_at": datetime.utcnow()},
+            },
+            upsert=True,
         )
     
     @classmethod

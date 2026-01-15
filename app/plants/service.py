@@ -1,6 +1,7 @@
 """Plant service - handles plant CRUD and knowledge base operations."""
 
 import base64
+import math
 from datetime import datetime, timedelta
 from typing import Optional, List
 from uuid import uuid4
@@ -450,34 +451,45 @@ class PlantService:
     
     @classmethod
     async def mark_watered(cls, plant_id: str, user_id: str) -> PlantResponse:
-        """Mark a plant as watered and update streak."""
+        """Mark a plant as watered, update schedule-aware streak, and log an enriched event."""
         object_id = cls._validate_object_id(plant_id)
         collection = cls._get_plants_collection()
         
-        # Get current plant to check streak
+        # Get current plant (owner-only)
         plant = await collection.find_one({"_id": object_id, "user_id": user_id})
         if not plant:
             raise NotFoundException("Plant not found")
         
+        settings = get_settings()
         now = datetime.utcnow()
-        last_watered = plant.get("last_watered")
-        current_streak = plant.get("watering_streak", 0)
-        
-        # Calculate new streak
-        if last_watered:
-            days_since = (now - last_watered).days
-            if days_since <= 3:  # Watered within reasonable schedule
-                new_streak = current_streak + 1
-            elif days_since > 7:  # Too long, reset streak
-                new_streak = 1
+
+        # Capture schedule context BEFORE update (for event narrative)
+        next_before = cls.calculate_next_water_date(plant)
+        recommended_at = next_before
+        streak_before = int(plant.get("watering_streak") or 0)
+
+        timing: Optional[str] = None
+        delta_days: Optional[int] = None
+        if recommended_at:
+            delta_days = int(math.floor((now - recommended_at).total_seconds() / 86400))
+            if delta_days < -int(settings.WATERING_GRACE_DAYS_EARLY):
+                timing = "early"
+            elif delta_days > int(settings.WATERING_GRACE_DAYS_LATE):
+                timing = "late"
             else:
-                new_streak = current_streak + 1  # Still counting
+                timing = "on_time"
+
+        # Apply safe streak rule (prevents overwatering to game streaks)
+        if timing == "on_time":
+            streak_after = streak_before + 1
+        elif timing == "late":
+            streak_after = 0
         else:
-            new_streak = 1  # First watering
+            streak_after = streak_before
         
         result = await collection.find_one_and_update(
             {"_id": object_id, "user_id": user_id},
-            {"$set": {"last_watered": now, "watering_streak": new_streak}},
+            {"$set": {"last_watered": now, "watering_streak": streak_after}},
             return_document=True
         )
 
@@ -488,14 +500,21 @@ class PlantService:
                 await AuthService.add_score(user_id, 2)
                 
                 # Weekly streak bonus (20 pts)
-                if new_streak > 0 and new_streak % 7 == 0:
+                if streak_after > 0 and streak_after % 7 == 0:
                    await AuthService.add_score(user_id, 20)
                 # Monthly streak bonus (75 pts) 
-                if new_streak > 0 and new_streak % 30 == 0:
+                if streak_after > 0 and streak_after % 30 == 0:
                    await AuthService.add_score(user_id, 75)
             except Exception:
                 pass
             
+            # Stats: canonical watering counters for achievements integrity
+            try:
+                from app.achievements.service import AchievementService
+                await AchievementService.increment_watering_stats(user_id, timing)
+            except Exception:
+                pass
+
             # Check and unlock any earned achievements
             try:
                 from app.achievements.service import AchievementService
@@ -504,12 +523,22 @@ class PlantService:
                 pass  # Don't fail watering if achievement check fails
 
             try:
-                from app.plants.events_service import EventService, EventType
-                await EventService.log_event(
+                from app.plants.events_service import EventService
+
+                # Compute schedule context AFTER update.
+                next_after = cls.calculate_next_water_date({**plant, "last_watered": now})
+                await EventService.log_watering_event(
                     user_id=user_id,
-                    event_type=EventType.PLANT_WATERED,
                     plant_id=plant_id,
-                    metadata={"last_watered": now},
+                    occurred_at=now,
+                    recommended_at=recommended_at,
+                    timing=timing,
+                    delta_days=delta_days,
+                    streak_before=streak_before,
+                    streak_after=streak_after,
+                    next_water_date_before=next_before,
+                    next_water_date_after=next_after,
+                    metadata={"source": "user"},
                 )
             except Exception:
                 pass

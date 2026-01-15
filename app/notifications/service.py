@@ -146,6 +146,12 @@ class NotificationService:
             notifications.append(response)
         
         return notifications, total_count, unread_count
+
+    @classmethod
+    async def get_unread_count(cls, user_id: str) -> int:
+        """Fast unread count for badge polling (no side effects)."""
+        collection = cls._get_collection()
+        return await collection.count_documents({"user_id": user_id, "is_read": False})
     
     @classmethod
     async def mark_as_read(cls, notification_id: str, user_id: str) -> NotificationResponse:
@@ -289,6 +295,67 @@ class NotificationService:
             plant_id=plant_id,
             action_url=f"/plants/{plant_id}"
         ))
+
+    @classmethod
+    async def generate_weather_alert(
+        cls,
+        user_id: str,
+        alert_title: str,
+        alert_message: str,
+        severity: str = "medium",
+    ) -> Optional[NotificationResponse]:
+        """
+        Generate a weather alert notification.
+
+        Important: This must never raise outward; weather endpoints should not 500 due to side effects.
+        """
+        # Respect global user preference.
+        try:
+            user = await Database.get_collection("users").find_one(
+                {"_id": ObjectId(user_id)},
+                {"notifications_enabled": 1},
+            )
+            if user and user.get("notifications_enabled") is False:
+                return None
+        except Exception:
+            # If user lookup fails, fail open (do not crash /weather endpoints).
+            pass
+
+        try:
+            # Deduplicate to avoid spamming: same user + type + title within 6 hours.
+            collection = cls._get_collection()
+            now = datetime.utcnow()
+            recent = await collection.find_one(
+                {
+                    "user_id": user_id,
+                    "notification_type": NotificationType.WEATHER_ALERT.value,
+                    "title": alert_title,
+                    "created_at": {"$gte": now - timedelta(hours=6)},
+                }
+            )
+            if recent:
+                return None
+
+            severity_norm = (severity or "").strip().lower()
+            if severity_norm == "high":
+                priority = NotificationPriority.HIGH
+            elif severity_norm == "low":
+                priority = NotificationPriority.LOW
+            else:
+                priority = NotificationPriority.MEDIUM
+
+            return await cls.create_notification(
+                NotificationCreate(
+                    user_id=user_id,
+                    notification_type=NotificationType.WEATHER_ALERT,
+                    priority=priority,
+                    title=alert_title,
+                    message=alert_message,
+                    action_url="/garden",
+                )
+            )
+        except Exception:
+            return None
     
     @classmethod
     async def check_watering_reminders(cls, user_id: str) -> List[NotificationResponse]:

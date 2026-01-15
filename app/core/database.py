@@ -61,6 +61,10 @@ class Database:
         # Health snapshots collection (timeline)
         await cls.db.health_snapshots.create_index([("user_id", 1), ("plant_id", 1), ("created_at", -1)])
 
+        # Events collection (history/timeline)
+        await cls.db.events.create_index([("user_id", 1), ("plant_id", 1), ("created_at", -1)])
+        await cls.db.events.create_index([("user_id", 1), ("event_type", 1), ("created_at", -1)])
+
         # Cities collection
         await cls.db.cities.create_index("name_lower", unique=True)
         await cls.db.cities.create_index("state_lower")
@@ -70,6 +74,10 @@ class Database:
         await cls.db.articles.create_index([("is_active", 1), ("scope", 1), ("priority", -1)])
         await cls.db.articles.create_index([("issue_tags", 1), ("is_active", 1)])
         await cls.db.articles.create_index([("plant_family", 1), ("is_active", 1)])
+
+        # Notifications collection (supports cheap unread-count + list ordering)
+        await cls.db.notifications.create_index([("user_id", 1), ("is_read", 1), ("created_at", -1)])
+        await cls.db.notifications.create_index([("user_id", 1), ("created_at", -1)])
 
         # Internal master data
         # `_id` is already uniquely indexed by Mongo; keep this non-unique for compatibility.

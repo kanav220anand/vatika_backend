@@ -24,13 +24,10 @@ async def get_notifications(
     Get user's notifications.
     
     Returns notifications sorted by unread first, then by date.
-    Also triggers check for watering reminders.
+    Note: This endpoint must not perform side effects (e.g. generating reminders).
     """
     user_id = current_user["id"]
-    
-    # Check for new watering reminders
-    await NotificationService.check_watering_reminders(user_id)
-    
+
     # Get all notifications
     notifications, total, unread = await NotificationService.get_user_notifications(
         user_id=user_id,
@@ -44,17 +41,26 @@ async def get_notifications(
         unread_count=unread
     )
 
+@router.get("/unread-count")
+async def get_unread_count(current_user: dict = Depends(get_current_user)):
+    """
+    Get unread notification count (cheap endpoint for badge polling).
+
+    Sanity checks:
+    - returns 0 when no notifications exist
+    - increments when an unread notification is created
+    - decreases when notifications are marked as read
+    """
+    unread = await NotificationService.get_unread_count(current_user["id"])
+    return {"unread_count": unread}
+
 
 @router.get("/count")
 async def get_notification_count(
     current_user: dict = Depends(get_current_user)
 ):
-    """Get unread notification count (lightweight endpoint for badge)."""
-    _, _, unread = await NotificationService.get_user_notifications(
-        user_id=current_user["id"],
-        limit=1,
-        include_read=False
-    )
+    """Deprecated: use /notifications/unread-count."""
+    unread = await NotificationService.get_unread_count(current_user["id"])
     return {"unread_count": unread}
 
 

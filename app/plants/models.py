@@ -1,7 +1,7 @@
 """Plant-related models and schemas."""
 
 from datetime import datetime
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 
 
@@ -139,6 +139,30 @@ class PlantResponse(BaseModel):
         default=None,
         description="Most recent plant event time (water/photo/health/etc.)",
     )
+
+
+class PlantEventResponse(BaseModel):
+    """Response schema for a plant event (history timeline)."""
+    id: str
+    event_type: str
+    plant_id: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+    # Enriched watering context (optional/backward compatible)
+    occurred_at: Optional[datetime] = None
+    recommended_at: Optional[datetime] = None
+    timing: Optional[str] = None  # early | on_time | late
+    delta_days: Optional[int] = None
+    streak_before: Optional[int] = None
+    streak_after: Optional[int] = None
+    next_water_date_before: Optional[datetime] = None
+    next_water_date_after: Optional[datetime] = None
+
+
+class PlantEventsResponse(BaseModel):
+    """Response containing list of plant events."""
+    events: List[PlantEventResponse]
 
 
 # ==================== Multi-Plant Detection Models ====================

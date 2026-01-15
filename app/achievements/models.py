@@ -62,6 +62,10 @@ class UserStats(BaseModel):
     total_waterings: int = 0
     max_streak: int = 0
     unique_species: int = 0
+    water_actions_count: int = 0
+    water_on_time_count: int = 0
+    water_early_count: int = 0
+    water_late_count: int = 0
     plants_revived: int = 0
     all_healthy_days: int = 0
 

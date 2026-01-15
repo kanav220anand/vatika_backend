@@ -21,6 +21,7 @@ from app.plants.models import (
     HealthTimelineResponse,
     HealthSnapshotCreateRequest,
     ImmediateFixUpdateRequest,
+    PlantEventsResponse,
 )
 from app.plants.service import PlantService
 from app.plants.openai_service import OpenAIService
@@ -445,7 +446,7 @@ async def update_immediate_fix(
     return add_signed_url_to_plant(plant.dict() if hasattr(plant, "dict") else dict(plant))
 
 
-@router.get("/{plant_id}/events")
+@router.get("/{plant_id}/events", response_model=PlantEventsResponse)
 async def get_plant_events(
     plant_id: str,
     limit: int = Query(default=50, le=200),

@@ -1,5 +1,6 @@
 """Weather API routes."""
 
+import logging
 from fastapi import APIRouter, Depends
 
 from app.core.dependencies import get_current_user
@@ -9,6 +10,7 @@ from app.weather.models import WeatherAlertResponse
 from app.weather.service import WeatherService
 
 router = APIRouter(prefix="/weather", tags=["Weather"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/alerts/{city}", response_model=WeatherAlertResponse)
@@ -42,13 +44,16 @@ async def get_my_weather_alerts(current_user: dict = Depends(get_current_user)):
         from app.notifications.service import NotificationService
         # Only notify for the most severe alert to avoid spam
         top_alert = sorted(weather_data.alerts, key=lambda x: 0 if x.severity == "high" else 1)[0]
-        
-        await NotificationService.generate_weather_alert(
-            user_id=current_user["id"],
-            alert_title=f"⚠️ {top_alert.title}",
-            alert_message=top_alert.message,
-            severity=top_alert.severity
-        )
+
+        # Never fail a GET response due to notification side-effects.
+        try:
+            await NotificationService.generate_weather_alert(
+                user_id=current_user["id"],
+                alert_title=f"⚠️ {top_alert.title}",
+                alert_message=top_alert.message,
+                severity=top_alert.severity,
+            )
+        except Exception:
+            logger.exception("Failed to generate weather alert notification")
             
     return weather_data
-

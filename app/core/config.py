@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     # Set to 0 to disable the weekly restriction for testing.
     PLANT_TIMELINE_MIN_DAYS_BETWEEN_SNAPSHOTS: int = 7
 
+    # Watering streak timing grace windows (schedule-aware streaks)
+    WATERING_GRACE_DAYS_EARLY: int = 1
+    WATERING_GRACE_DAYS_LATE: int = 1
+
     @field_validator(
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
