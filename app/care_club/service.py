@@ -499,19 +499,32 @@ class EnrichmentService:
             return {}
 
         users_cursor = cls._users_collection().find(
-            {"_id": {"$in": [ObjectId(uid) for uid in author_ids if ObjectId.is_valid(uid)]}}
+            {"_id": {"$in": [ObjectId(uid) for uid in author_ids if ObjectId.is_valid(uid)]}},
+            {"name": 1, "city": 1, "level": 1, "title": 1, "profile_visibility": 1},
         )
         
         authors = {}
         async for user in users_cursor:
             user_id = str(user["_id"])
-            authors[user_id] = {
-                "id": user_id,
-                "name": user.get("name", "Unknown"),
-                "city": user.get("city"),
-                "level": user.get("level", 1),
-                "title": user.get("title"),
-            }
+            visibility = (user.get("profile_visibility") or "public").strip().lower()
+            if visibility == "private":
+                authors[user_id] = {
+                    "id": None,
+                    "name": "Anonymous",
+                    "city": None,
+                    "level": 1,
+                    "title": None,
+                    "_visibility": "private",
+                }
+            else:
+                authors[user_id] = {
+                    "id": user_id,
+                    "name": user.get("name", "Unknown"),
+                    "city": user.get("city"),
+                    "level": user.get("level", 1),
+                    "title": user.get("title"),
+                    "_visibility": "public",
+                }
 
         return authors
 
@@ -554,8 +567,20 @@ class EnrichmentService:
 
         # Enrich
         for post in posts:
-            post["author"] = authors.get(post["author_id"])
-            post["plant"] = plants.get(post["plant_id"])
+            author = authors.get(post["author_id"])
+            post["author"] = {k: v for (k, v) in (author or {}).items() if not str(k).startswith("_")} if author else None
+
+            # If author is private, do not leak raw author_id in public responses.
+            if author and author.get("_visibility") == "private":
+                post["author_id"] = None
+                plant = plants.get(post["plant_id"])
+                # Avoid leaking personal plant nicknames for private users.
+                if plant and isinstance(plant, dict):
+                    plant = dict(plant)
+                    plant["nickname"] = None
+                post["plant"] = plant
+            else:
+                post["plant"] = plants.get(post["plant_id"])
 
         return posts
 
@@ -569,7 +594,9 @@ class EnrichmentService:
         authors = await cls.get_authors_batch(author_ids)
 
         for comment in comments:
-            comment["author"] = authors.get(comment["author_id"])
+            author = authors.get(comment["author_id"])
+            comment["author"] = {k: v for (k, v) in (author or {}).items() if not str(k).startswith("_")} if author else None
+            if author and author.get("_visibility") == "private":
+                comment["author_id"] = None
 
         return comments
-

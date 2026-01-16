@@ -5,12 +5,13 @@ from typing import List, Dict, Tuple, Optional
 from bson import ObjectId
 
 from app.core.database import Database
-from app.plants.events_service import EventType
 from app.achievements.models import (
     AchievementResponse,
     AchievementsListResponse,
     UserStats,
 )
+
+WATERING_EVENT_TYPES = ("watered", "plant_watered")
 
 
 class AchievementService:
@@ -69,7 +70,7 @@ class AchievementService:
             try:
                 events = Database.get_collection("events")
                 water_actions_count = await events.count_documents(
-                    {"user_id": user_id, "event_type": {"$in": [EventType.WATERED, EventType.PLANT_WATERED]}}
+                    {"user_id": user_id, "event_type": {"$in": list(WATERING_EVENT_TYPES)}}
                 )
                 await stats_collection.update_one(
                     {"user_id": user_id},

@@ -64,7 +64,7 @@ class CreateCommentRequest(BaseModel):
 
 class AuthorInfo(BaseModel):
     """Author information for display."""
-    id: str
+    id: Optional[str] = None
     name: str
     city: Optional[str] = None
     level: int = 1
@@ -88,7 +88,7 @@ class PostResponse(BaseModel):
     """Full post response for detail view."""
     id: str
     plant_id: str
-    author_id: str
+    author_id: Optional[str] = None
     title: str
     details: Optional[str] = None
     tried: Optional[str] = None
@@ -110,7 +110,7 @@ class PostListItem(BaseModel):
     """Post item for list/feed view."""
     id: str
     plant_id: str
-    author_id: str
+    author_id: Optional[str] = None
     title: str
     photo_urls: List[str] = []
     status: str
@@ -139,7 +139,7 @@ class CommentResponse(BaseModel):
     """Comment response."""
     id: str
     post_id: str
-    author_id: str
+    author_id: Optional[str] = None
     body: str
     photo_urls: List[str] = []
     created_at: datetime
@@ -168,4 +168,3 @@ class HelpfulVoteResponse(BaseModel):
     """Response after toggling helpful vote."""
     voted: bool
     new_count: int
-

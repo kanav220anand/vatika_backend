@@ -26,6 +26,7 @@ from app.care_club.service import (
     CommentsRepository,
     EnrichmentService,
 )
+from app.care_club.guards import require_public_profile
 
 
 router = APIRouter(prefix="/care-club", tags=["Care Club"])
@@ -174,6 +175,7 @@ async def create_post(
     The plant_id must belong to the current user.
     If no photos are provided, the plant's image will be used as default.
     """
+    await require_public_profile(current_user["id"])
     post = await CareClubRepository.create_post(
         author_id=current_user["id"],
         plant_id=request.plant_id,
@@ -218,6 +220,7 @@ async def resolve_post(
     
     Only the post author can resolve. Must provide 'resolved_note' explaining what worked.
     """
+    await require_public_profile(current_user["id"])
     post = await CareClubRepository.resolve_post(
         post_id=post_id,
         user_id=current_user["id"],
@@ -317,6 +320,7 @@ async def add_comment(
     current_user: dict = Depends(get_current_user),
 ):
     """Add a comment to a post."""
+    await require_public_profile(current_user["id"])
     comment = await CommentsRepository.add_comment(
         post_id=post_id,
         author_id=current_user["id"],
@@ -371,6 +375,7 @@ async def toggle_helpful(
     
     Each user can only vote once per comment. Calling again removes the vote.
     """
+    await require_public_profile(current_user["id"])
     voted, new_count = await CommentsRepository.toggle_helpful(
         post_id=post_id,
         comment_id=comment_id,
@@ -378,4 +383,3 @@ async def toggle_helpful(
     )
 
     return HelpfulVoteResponse(voted=voted, new_count=new_count)
-

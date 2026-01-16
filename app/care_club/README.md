@@ -116,12 +116,35 @@ Response format:
 | Action | Who Can Do It |
 |--------|---------------|
 | Read posts/comments | Any authenticated user |
-| Create post | Authenticated user (plant must belong to them) |
-| Resolve post | Post author only |
+| Create post | Public-profile users only (plant must belong to them) |
+| Resolve post | Public-profile users only (and post author) |
 | Delete post | Post author only |
-| Create comment | Any authenticated user |
+| Create comment | Public-profile users only |
 | Delete comment | Comment author only |
-| Toggle helpful | Any authenticated user (1 vote per comment) |
+| Toggle helpful | Public-profile users only (1 vote per comment) |
+
+### Privacy (PRIV-001)
+
+If `users.profile_visibility == "private"`:
+- Reads still work (feed/posts/comments)
+- All write actions are rejected with `403`:
+  `"Your profile is private. Switch to Public to participate in Care Club."`
+- In read responses, private authors are anonymized:
+  - `author_id` becomes `null`
+  - `author.name` becomes `"Anonymous"`
+
+Quick sanity (requires valid JWT tokens):
+```bash
+# Private user should be blocked from creating a post
+curl -i -H "Authorization: Bearer $PRIVATE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"plant_id":"<PLANT_ID>","title":"Test","details":"x"}' \
+  http://localhost:8000/api/v1/vatisha/care-club/posts
+
+# Feed should show Anonymous for private authors
+curl -s -H "Authorization: Bearer $PUBLIC_TOKEN" \
+  "http://localhost:8000/api/v1/vatisha/care-club/posts?limit=5" | jq '.posts[].author'
+```
 
 ### Photo Storage
 
