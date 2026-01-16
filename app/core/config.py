@@ -28,6 +28,20 @@ class Settings(BaseSettings):
     # OpenAI
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o"
+
+    # COST-001: API hardening for AI spend control
+    MAX_REQUEST_BODY_BYTES: int = 2_000_000
+    AI_MAX_CONCURRENT: int = 10
+    AI_OPENAI_TIMEOUT_SECONDS: int = 45
+    AI_MAX_S3_IMAGE_BYTES: int = 8_000_000
+    AI_MAX_BASE64_CHARS: int = 120_000  # legacy support; prefer S3 keys
+
+    AI_RATE_PER_IP_PER_MINUTE: int = 60
+    AI_RATE_ANALYZE_PER_MINUTE: int = 10
+    AI_RATE_GENERIC_PER_MINUTE: int = 30
+
+    AI_DAILY_REQUESTS: int = 50
+    AI_DAILY_SNAPSHOTS: int = 10
     
     # OpenWeatherMap
     OPENWEATHER_API_KEY: str = ""

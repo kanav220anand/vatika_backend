@@ -132,8 +132,21 @@ class S3Service:
             raise ValueError("AWS S3 credentials not configured.")
 
         try:
+            # COST-001: avoid downloading arbitrarily large objects into memory.
+            try:
+                bucket = self._validated_bucket_name()
+                head = self.client.head_object(Bucket=bucket, Key=object_name)
+                max_bytes = int(getattr(settings, "AI_MAX_S3_IMAGE_BYTES", 8_000_000))
+                size = int(head.get("ContentLength") or 0)
+                if size and size > max_bytes:
+                    raise ValueError("Image is too large to analyze. Please upload a smaller photo.")
+            except ValueError:
+                raise
+            except Exception:
+                # If HEAD fails, proceed (best-effort) – downstream limits still apply.
+                bucket = self._validated_bucket_name()
+
             file_stream = BytesIO()
-            bucket = self._validated_bucket_name()
             self.client.download_fileobj(bucket, object_name, file_stream)
             file_stream.seek(0)
             return base64.b64encode(file_stream.read()).decode('utf-8')

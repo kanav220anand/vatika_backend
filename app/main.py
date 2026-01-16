@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
 from app.core.database import Database
+from app.core.middleware import MaxBodySizeMiddleware
 from app.auth.views import router as auth_router
 from app.plants.views import router as plants_router
 from app.weather.views import router as weather_router
@@ -77,6 +78,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# COST-001: protect against huge payloads (base64 DoS, etc.)
+app.add_middleware(MaxBodySizeMiddleware)
 
 # Include routers
 routers = [

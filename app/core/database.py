@@ -79,6 +79,12 @@ class Database:
         await cls.db.notifications.create_index([("user_id", 1), ("is_read", 1), ("created_at", -1)])
         await cls.db.notifications.create_index([("user_id", 1), ("created_at", -1)])
 
+        # AI usage / rate limits (COST-001)
+        await cls.db.rate_limits.create_index([("expires_at", 1)], expireAfterSeconds=0)
+        await cls.db.rate_limits.create_index([("key", 1), ("window_start", 1)])
+        await cls.db.ai_usage.create_index([("user_id", 1), ("created_at", -1)])
+        await cls.db.ai_usage.create_index([("endpoint", 1), ("created_at", -1)])
+
         # Internal master data
         # `_id` is already uniquely indexed by Mongo; keep this non-unique for compatibility.
         await cls.db.internal_master.create_index("_id")

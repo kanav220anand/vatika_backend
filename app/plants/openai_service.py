@@ -2,6 +2,7 @@
 
 import re
 import json
+import asyncio
 from typing import Optional, List, Dict
 from openai import AsyncOpenAI
 from app.core.config import get_settings
@@ -19,14 +20,30 @@ class OpenAIService:
     """Handles OpenAI API interactions for plant analysis."""
     
     _instance: "OpenAIService" = None
+    _semaphore: Optional[asyncio.Semaphore] = None
     
     def __new__(cls):
         """Singleton pattern for OpenAI client."""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance.client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+            # COST-001: disable client retries to avoid multiplying spend on transient failures.
+            cls._instance.client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY, max_retries=0)
             cls._instance.model = settings.OPENAI_MODEL
+            cls._semaphore = asyncio.Semaphore(int(getattr(settings, "AI_MAX_CONCURRENT", 10)))
         return cls._instance
+
+    async def _chat_completion(self, **kwargs):
+        """
+        Centralized OpenAI call wrapper (COST-001):
+        - limits concurrency
+        - enforces a hard timeout
+        """
+        timeout_s = int(getattr(settings, "AI_OPENAI_TIMEOUT_SECONDS", 45))
+        sem = self.__class__._semaphore
+        if sem is None:
+            return await asyncio.wait_for(self.client.chat.completions.create(**kwargs), timeout=timeout_s)
+        async with sem:
+            return await asyncio.wait_for(self.client.chat.completions.create(**kwargs), timeout=timeout_s)
 
     @staticmethod
     def _normalize_primary_issue(
@@ -197,7 +214,7 @@ Example: {"is_plant": false, "reason": "Image contains a coffee mug, not a plant
                 }
 
         try:
-            response = await self.client.chat.completions.create(
+            response = await self._chat_completion(
                 model=self.model,
                 messages=[
                     {
@@ -460,7 +477,7 @@ IMPORTANT: If the image does NOT contain any real plants (e.g., it's a coffee mu
                 }
 
         try:
-            response = await self.client.chat.completions.create(
+            response = await self._chat_completion(
                 model=self.model,
                 messages=[
                     {
@@ -608,7 +625,7 @@ Return ONLY the JSON object, no other text."""
             })
 
         try:
-            response = await self.client.chat.completions.create(
+            response = await self._chat_completion(
                 model=self.model,
                 messages=[{"role": "user", "content": messages_content}],
                 max_tokens=1000,

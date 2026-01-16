@@ -1,9 +1,11 @@
 """Plants API routes."""
 
+import time
 from typing import List, Optional
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Request, status
 
-from app.core.dependencies import get_current_user, get_current_user_optional
+from app.core.dependencies import get_current_user
+from app.core.config import get_settings
 from app.core.exceptions import AppException, BadRequestException
 from app.auth.service import AuthService
 from app.plants.models import (
@@ -28,15 +30,20 @@ from app.plants.openai_service import OpenAIService
 from app.plants.video_service import VideoService, ImageService, VideoProcessingError
 from app.core.aws import S3Service
 from app.plants.events_service import EventService
+from app.ai.rate_limit import enforce_ai_limits
+from app.ai.security import validate_user_owned_s3_key, validate_base64_payload
+from app.ai.usage import AIUsageService, AIUsageLog
 
 
 router = APIRouter(prefix="/plants", tags=["Plants"])
+settings = get_settings()
 
 
 @router.post("/analyze", response_model=PlantAnalysisResponse)
 async def analyze_plant(
     request: PlantAnalysisRequest,
-    current_user: Optional[dict] = Depends(get_current_user_optional)
+    http_request: Request,
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Analyze a plant image using AI.
@@ -45,20 +52,55 @@ async def analyze_plant(
     - Assesses health condition
     - Provides care instructions tailored for Indian climate
     
-    Authentication is optional but provides better context (user's city).
+    Authentication is required (COST-001).
     """
-    # Get user's city for context if authenticated
-    city = None
-    if current_user:
-        city = await AuthService.get_user_city(current_user["id"])
+    await enforce_ai_limits(
+        request=http_request,
+        user_id=current_user["id"],
+        endpoint="plants.analyze",
+        per_minute=int(settings.AI_RATE_ANALYZE_PER_MINUTE),
+        daily_requests=int(settings.AI_DAILY_REQUESTS),
+    )
+
+    city = await AuthService.get_user_city(current_user["id"])
+
+    validate_base64_payload(request.image_base64, max_chars=int(settings.AI_MAX_BASE64_CHARS), field_name="image_base64")
+    image_key = None
+    if request.image_url:
+        image_key = validate_user_owned_s3_key(current_user["id"], request.image_url)
     
     try:
         openai_service = OpenAIService()
-        analysis = await openai_service.analyze_plant(
-            image_base64=request.image_base64,
-            image_url=request.image_url,
-            city=city
-        )
+        started = time.monotonic()
+        try:
+            analysis = await openai_service.analyze_plant(
+                image_base64=request.image_base64,
+                image_url=image_key,
+                city=city,
+            )
+            latency_ms = int((time.monotonic() - started) * 1000)
+            await AIUsageService.log(
+                AIUsageLog(
+                    user_id=current_user["id"],
+                    endpoint="plants.analyze",
+                    model=openai_service.model,
+                    status="success",
+                    latency_ms=latency_ms,
+                )
+            )
+        except Exception as e:
+            latency_ms = int((time.monotonic() - started) * 1000)
+            await AIUsageService.log(
+                AIUsageLog(
+                    user_id=current_user["id"],
+                    endpoint="plants.analyze",
+                    model=openai_service.model,
+                    status="fail",
+                    latency_ms=latency_ms,
+                    error_type=type(e).__name__,
+                )
+            )
+            raise
         
         # Save to knowledge base (hybrid approach)
         await PlantService.save_to_knowledge_base(analysis)
@@ -72,7 +114,8 @@ async def analyze_plant(
 @router.post("/analyze/detect", response_model=MultiPlantDetectionResponse)
 async def detect_plants(
     request: MultiPlantAnalysisRequest,
-    current_user: Optional[dict] = Depends(get_current_user_optional)
+    http_request: Request,
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Detect all plants in an image or video.
@@ -86,13 +129,21 @@ async def detect_plants(
     import asyncio
     from concurrent.futures import ThreadPoolExecutor
     
-    # Get user's city for context if authenticated
-    city = None
-    if current_user:
-        city = await AuthService.get_user_city(current_user["id"])
+    await enforce_ai_limits(
+        request=http_request,
+        user_id=current_user["id"],
+        endpoint="plants.detect",
+        per_minute=int(settings.AI_RATE_ANALYZE_PER_MINUTE),
+        daily_requests=int(settings.AI_DAILY_REQUESTS),
+    )
+
+    city = await AuthService.get_user_city(current_user["id"])
     
     try:
         # Determine source type and get image for analysis
+        validate_base64_payload(request.image_base64, max_chars=int(settings.AI_MAX_BASE64_CHARS), field_name="image_base64")
+        validate_base64_payload(request.video_base64, max_chars=int(settings.AI_MAX_BASE64_CHARS), field_name="video_base64")
+
         if request.video_base64 and request.video_mime_type:
             source_type = "video"
             try:
@@ -111,9 +162,9 @@ async def detect_plants(
             if not request.image_base64:
                  try:
                      # Download from S3 to get base64 for cropping
-                     if not request.image_url.startswith("http"):
-                         s3 = S3Service()
-                         image_base64 = s3.download_file_as_base64(request.image_url)
+                     image_key = validate_user_owned_s3_key(current_user["id"], request.image_url)
+                     s3 = S3Service()
+                     image_base64 = s3.download_file_as_base64(image_key)
                  except Exception as e:
                      print(f"DEBUG ERROR: Failed to download source image from S3: {e}")
                      # Proceeding without base64 might cause crop failure later if plants detected
@@ -132,11 +183,36 @@ async def detect_plants(
         # We need to update that signature in openai_service.py as well!
         
         # Let's focus on AnalyzeThumbnail first for S3 flow as it's the main saving step
-        detected_plants = await openai_service.detect_multiple_plants(
-            image_base64=image_base64,
-            image_url=request.image_url, 
-            city=city
-        )
+        started = time.monotonic()
+        try:
+            detected_plants = await openai_service.detect_multiple_plants(
+                image_base64=image_base64,
+                image_url=None if not request.image_url else validate_user_owned_s3_key(current_user["id"], request.image_url),
+                city=city,
+            )
+            latency_ms = int((time.monotonic() - started) * 1000)
+            await AIUsageService.log(
+                AIUsageLog(
+                    user_id=current_user["id"],
+                    endpoint="plants.detect",
+                    model=openai_service.model,
+                    status="success",
+                    latency_ms=latency_ms,
+                )
+            )
+        except Exception as e:
+            latency_ms = int((time.monotonic() - started) * 1000)
+            await AIUsageService.log(
+                AIUsageLog(
+                    user_id=current_user["id"],
+                    endpoint="plants.detect",
+                    model=openai_service.model,
+                    status="fail",
+                    latency_ms=latency_ms,
+                    error_type=type(e).__name__,
+                )
+            )
+            raise
         
         # Wait, if we pass URL as image_base64 to detect_multiple_plants, it might fail if that method 
         # specifically expects base64 or doesn't check for URL-like string.
@@ -187,26 +263,72 @@ async def detect_plants(
 @router.post("/analyze/thumbnail", response_model=PlantAnalysisResponse)
 async def analyze_thumbnail(
     request: PlantThumbnailAnalysisRequest,
-    current_user: Optional[dict] = Depends(get_current_user_optional)
+    http_request: Request,
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Analyze a specific plant thumbnail with full health and care information.
     
     Use this after /analyze/detect to get detailed analysis for selected plants.
     """
-    city = None
-    if current_user:
-        city = await AuthService.get_user_city(current_user["id"])
+    await enforce_ai_limits(
+        request=http_request,
+        user_id=current_user["id"],
+        endpoint="plants.thumbnail",
+        per_minute=int(settings.AI_RATE_ANALYZE_PER_MINUTE),
+        daily_requests=int(settings.AI_DAILY_REQUESTS),
+    )
+
+    city = await AuthService.get_user_city(current_user["id"])
     
     try:
-        openai_service = OpenAIService()
-        analysis = await openai_service.analyze_plant_thumbnail(
-            thumbnail_base64=request.thumbnail_base64 or "",
-            # We might want to clear thumbnail logic if url provided? No, thumbnail is usually small crop
-            city=city,
-            context_image_base64=request.context_image_base64,
-            context_image_url=request.context_image_url
+        validate_base64_payload(
+            request.thumbnail_base64,
+            max_chars=int(settings.AI_MAX_BASE64_CHARS),
+            field_name="thumbnail_base64",
         )
+        validate_base64_payload(
+            request.context_image_base64,
+            max_chars=int(settings.AI_MAX_BASE64_CHARS),
+            field_name="context_image_base64",
+        )
+
+        context_key = None
+        if request.context_image_url:
+            context_key = validate_user_owned_s3_key(current_user["id"], request.context_image_url)
+
+        openai_service = OpenAIService()
+        started = time.monotonic()
+        try:
+            analysis = await openai_service.analyze_plant_thumbnail(
+                thumbnail_base64=request.thumbnail_base64 or "",
+                city=city,
+                context_image_base64=request.context_image_base64,
+                context_image_url=context_key,
+            )
+            latency_ms = int((time.monotonic() - started) * 1000)
+            await AIUsageService.log(
+                AIUsageLog(
+                    user_id=current_user["id"],
+                    endpoint="plants.thumbnail",
+                    model=openai_service.model,
+                    status="success",
+                    latency_ms=latency_ms,
+                )
+            )
+        except Exception as e:
+            latency_ms = int((time.monotonic() - started) * 1000)
+            await AIUsageService.log(
+                AIUsageLog(
+                    user_id=current_user["id"],
+                    endpoint="plants.thumbnail",
+                    model=openai_service.model,
+                    status="fail",
+                    latency_ms=latency_ms,
+                    error_type=type(e).__name__,
+                )
+            )
+            raise
         
         # Save to knowledge base
         await PlantService.save_to_knowledge_base(analysis)
@@ -386,15 +508,26 @@ async def get_health_timeline(
 async def create_health_snapshot(
     plant_id: str,
     request: HealthSnapshotCreateRequest,
+    http_request: Request,
     current_user: dict = Depends(get_current_user),
 ):
     """Add a weekly health snapshot photo for a plant (analyzed automatically)."""
     try:
+        await enforce_ai_limits(
+            request=http_request,
+            user_id=current_user["id"],
+            endpoint="plants.snapshot",
+            per_minute=int(settings.AI_RATE_GENERIC_PER_MINUTE),
+            daily_requests=int(settings.AI_DAILY_REQUESTS),
+            daily_snapshots=int(settings.AI_DAILY_SNAPSHOTS),
+        )
+
+        image_key = validate_user_owned_s3_key(current_user["id"], request.image_key)
         city = await AuthService.get_user_city(current_user["id"])
         snapshot = await PlantService.create_weekly_health_snapshot(
             plant_id=plant_id,
             user_id=current_user["id"],
-            image_key=request.image_key,
+            image_key=image_key,
             city=city,
         )
 
