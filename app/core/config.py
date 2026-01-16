@@ -52,6 +52,14 @@ class Settings(BaseSettings):
     WATERING_GRACE_DAYS_EARLY: int = 1
     WATERING_GRACE_DAYS_LATE: int = 1
 
+    # Admin moderation (Postman-only MVP)
+    ADMIN_API_KEY: str = ""
+
+    # Care Club rate limits (per 24 hours)
+    CARE_CLUB_POSTS_PER_24H: int = 3
+    CARE_CLUB_COMMENTS_PER_24H: int = 10
+    CARE_CLUB_HELPFUL_VOTES_PER_24H: int = 30
+
     @field_validator(
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",

@@ -38,6 +38,7 @@ class CareClubRepository:
     @classmethod
     async def list_posts(
         cls,
+        viewer_user_id: str,
         limit: int = 20,
         cursor: Optional[str] = None,
         status: Optional[str] = None,
@@ -49,21 +50,34 @@ class CareClubRepository:
         """
         collection = cls._posts_collection()
 
+        moderation_filter: Dict[str, Any] = {
+            "$or": [
+                {"moderation_status": "active"},
+                {"moderation_status": {"$exists": False}},
+                {"author_id": viewer_user_id},
+            ]
+        }
+
         # Build filter
-        filter_query: Dict[str, Any] = {}
+        parts: List[Dict[str, Any]] = [moderation_filter]
         if status:
-            filter_query["status"] = status
+            parts.append({"status": status})
 
         # Cursor-based pagination using created_at
         if cursor:
             try:
                 cursor_time = datetime.fromisoformat(cursor)
-                filter_query["created_at"] = {"$lt": cursor_time}
+                parts.append({"created_at": {"$lt": cursor_time}})
             except ValueError:
                 pass  # Invalid cursor, ignore
 
+        filter_query: Dict[str, Any] = {"$and": parts} if len(parts) > 1 else parts[0]
+
         # Get total count (without cursor filter for accurate total)
-        base_filter = {"status": status} if status else {}
+        base_parts: List[Dict[str, Any]] = [moderation_filter]
+        if status:
+            base_parts.append({"status": status})
+        base_filter: Dict[str, Any] = {"$and": base_parts} if len(base_parts) > 1 else base_parts[0]
         total = await collection.count_documents(base_filter)
 
         # Fetch posts
@@ -139,6 +153,7 @@ class CareClubRepository:
             "tried": tried,
             "photo_urls": final_photo_urls,
             "status": "open",
+            "moderation_status": "active",
             "resolved_at": None,
             "resolved_note": None,
             "created_at": now,
@@ -255,21 +270,42 @@ class CommentsRepository:
         if not ObjectId.is_valid(post_id):
             raise NotFoundException("Post not found")
 
+        posts_collection = cls._posts_collection()
+        post = await posts_collection.find_one({"_id": ObjectId(post_id)}, {"author_id": 1, "moderation_status": 1})
+        if not post:
+            raise NotFoundException("Post not found")
+
+        if (post.get("moderation_status") or "active") != "active" and post.get("author_id") != user_id:
+            # Public should not be able to see hidden/removed content.
+            raise NotFoundException("Post not found")
+
         collection = cls._comments_collection()
 
+        moderation_filter: Dict[str, Any] = {
+            "$or": [
+                {"moderation_status": "active"},
+                {"moderation_status": {"$exists": False}},
+                {"author_id": user_id},
+            ]
+        }
+
         # Build filter
-        filter_query: Dict[str, Any] = {"post_id": post_id}
+        base_parts: List[Dict[str, Any]] = [{"post_id": post_id}, moderation_filter]
+        parts: List[Dict[str, Any]] = list(base_parts)
 
         # Cursor-based pagination
         if cursor:
             try:
                 cursor_time = datetime.fromisoformat(cursor)
-                filter_query["created_at"] = {"$gt": cursor_time}
+                parts.append({"created_at": {"$gt": cursor_time}})
             except ValueError:
                 pass
 
+        filter_query: Dict[str, Any] = {"$and": parts} if len(parts) > 1 else parts[0]
+
         # Get total count
-        total = await collection.count_documents({"post_id": post_id})
+        base_filter: Dict[str, Any] = {"$and": base_parts} if len(base_parts) > 1 else base_parts[0]
+        total = await collection.count_documents(base_filter)
 
         # Fetch comments (oldest first)
         comments_cursor = collection.find(filter_query).sort("created_at", 1).limit(limit + 1)
@@ -313,9 +349,11 @@ class CommentsRepository:
         if not ObjectId.is_valid(post_id):
             raise NotFoundException("Post not found")
 
-        # Verify post exists
-        post = await cls._posts_collection().find_one({"_id": ObjectId(post_id)})
+        # Verify post exists and is visible
+        post = await cls._posts_collection().find_one({"_id": ObjectId(post_id)}, {"moderation_status": 1})
         if not post:
+            raise NotFoundException("Post not found")
+        if (post.get("moderation_status") or "active") != "active":
             raise NotFoundException("Post not found")
 
         now = datetime.utcnow()
@@ -326,6 +364,7 @@ class CommentsRepository:
             "body": body,
             "photo_urls": photo_urls or [],
             "created_at": now,
+            "moderation_status": "active",
             "aggregates": {
                 "helpful_count": 0,
             },
@@ -404,9 +443,11 @@ class CommentsRepository:
         comments_collection = cls._comments_collection()
         votes_collection = cls._helpful_votes_collection()
 
-        # Verify comment exists
-        comment = await comments_collection.find_one({"_id": ObjectId(comment_id)})
+        # Verify comment exists and is visible
+        comment = await comments_collection.find_one({"_id": ObjectId(comment_id)}, {"post_id": 1, "moderation_status": 1})
         if not comment:
+            raise NotFoundException("Comment not found")
+        if (comment.get("moderation_status") or "active") != "active":
             raise NotFoundException("Comment not found")
 
         if comment["post_id"] != post_id:

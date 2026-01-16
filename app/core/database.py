@@ -89,12 +89,25 @@ class Database:
         await cls.db.care_club_posts.create_index([("plant_id", 1)])
         await cls.db.care_club_posts.create_index([("status", 1), ("created_at", -1)])
         await cls.db.care_club_posts.create_index([("last_activity_at", -1)])
+        await cls.db.care_club_posts.create_index([("moderation_status", 1), ("created_at", -1)])
 
         await cls.db.care_club_comments.create_index([("post_id", 1), ("created_at", 1)])
+        await cls.db.care_club_comments.create_index([("post_id", 1), ("moderation_status", 1), ("created_at", 1)])
         await cls.db.care_club_comments.create_index([("author_id", 1)])
 
         await cls.db.care_club_helpful_votes.create_index([("comment_id", 1), ("user_id", 1)], unique=True)
         await cls.db.care_club_helpful_votes.create_index([("post_id", 1)])
+        await cls.db.care_club_helpful_votes.create_index([("user_id", 1), ("created_at", -1)])
+
+        # Moderation collections
+        await cls.db.care_club_reports.create_index([("status", 1), ("created_at", -1)])
+        await cls.db.care_club_reports.create_index([("target_type", 1), ("target_id", 1)])
+        await cls.db.care_club_reports.create_index(
+            [("reporter_user_id", 1), ("target_type", 1), ("target_id", 1)],
+            unique=True,
+        )
+        await cls.db.moderation_actions.create_index([("created_at", -1)])
+        await cls.db.moderation_actions.create_index([("target_type", 1), ("target_id", 1), ("created_at", -1)])
 
     @classmethod
     async def _ensure_internal_master_docs(cls):

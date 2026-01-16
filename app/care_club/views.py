@@ -4,8 +4,10 @@ from fastapi import APIRouter, Depends, Query, Path
 from typing import Optional, List
 
 from app.core.dependencies import get_current_user
+from app.core.database import Database
 from app.core.config import get_settings
 from app.core.aws import S3Service
+from app.core.exceptions import NotFoundException
 from app.care_club.models import (
     CreatePostRequest,
     ResolvePostRequest,
@@ -20,13 +22,16 @@ from app.care_club.models import (
     CommentAggregates,
     AuthorInfo,
     PlantInfo,
+    CreateReportRequest,
+    ReportResponse,
 )
 from app.care_club.service import (
     CareClubRepository,
     CommentsRepository,
     EnrichmentService,
 )
-from app.care_club.guards import require_public_profile
+from app.care_club.guards import require_public_profile, require_rate_limit
+from app.care_club.moderation_service import ModerationService
 
 
 router = APIRouter(prefix="/care-club", tags=["Care Club"])
@@ -99,6 +104,7 @@ async def list_posts(
     Pagination is cursor-based using created_at timestamps.
     """
     posts, total, has_more, next_cursor = await CareClubRepository.list_posts(
+        viewer_user_id=current_user["id"],
         limit=limit,
         cursor=cursor,
         status=status,
@@ -117,6 +123,7 @@ async def list_posts(
             title=p["title"],
             photo_urls=_to_read_urls(p.get("photo_urls", [])),
             status=p["status"],
+            moderation_status=p.get("moderation_status", "active"),
             created_at=p["created_at"],
             last_activity_at=p["last_activity_at"],
             aggregates=PostAggregates(**p.get("aggregates", {})),
@@ -140,6 +147,9 @@ async def get_post(
     """Get a single post by ID."""
     post = await CareClubRepository.get_post(post_id)
 
+    if (post.get("moderation_status") or "active") != "active" and post.get("author_id") != current_user["id"]:
+        raise NotFoundException("Post not found")
+
     # Enrich
     posts = await EnrichmentService.enrich_posts([post])
     post = posts[0]
@@ -153,6 +163,7 @@ async def get_post(
         tried=post.get("tried"),
         photo_urls=_to_read_urls(post.get("photo_urls", [])),
         status=post["status"],
+        moderation_status=post.get("moderation_status", "active"),
         resolved_at=post.get("resolved_at"),
         resolved_note=post.get("resolved_note"),
         created_at=post["created_at"],
@@ -176,6 +187,7 @@ async def create_post(
     If no photos are provided, the plant's image will be used as default.
     """
     await require_public_profile(current_user["id"])
+    await require_rate_limit(current_user["id"], "post")
     post = await CareClubRepository.create_post(
         author_id=current_user["id"],
         plant_id=request.plant_id,
@@ -198,6 +210,7 @@ async def create_post(
         tried=post.get("tried"),
         photo_urls=_to_read_urls(post.get("photo_urls", [])),
         status=post["status"],
+        moderation_status=post.get("moderation_status", "active"),
         resolved_at=post.get("resolved_at"),
         resolved_note=post.get("resolved_note"),
         created_at=post["created_at"],
@@ -240,6 +253,7 @@ async def resolve_post(
         tried=post.get("tried"),
         photo_urls=_to_read_urls(post.get("photo_urls", [])),
         status=post["status"],
+        moderation_status=post.get("moderation_status", "active"),
         resolved_at=post.get("resolved_at"),
         resolved_note=post.get("resolved_note"),
         created_at=post["created_at"],
@@ -300,6 +314,7 @@ async def list_comments(
             body=c["body"],
             photo_urls=_to_read_urls(c.get("photo_urls", [])),
             created_at=c["created_at"],
+            moderation_status=c.get("moderation_status", "active"),
             aggregates=CommentAggregates(**c.get("aggregates", {})),
             author=AuthorInfo(**c["author"]) if c.get("author") else None,
             user_voted_helpful=c.get("user_voted_helpful", False),
@@ -321,6 +336,7 @@ async def add_comment(
 ):
     """Add a comment to a post."""
     await require_public_profile(current_user["id"])
+    await require_rate_limit(current_user["id"], "comment")
     comment = await CommentsRepository.add_comment(
         post_id=post_id,
         author_id=current_user["id"],
@@ -339,6 +355,7 @@ async def add_comment(
         body=comment["body"],
         photo_urls=_to_read_urls(comment.get("photo_urls", [])),
         created_at=comment["created_at"],
+        moderation_status=comment.get("moderation_status", "active"),
         aggregates=CommentAggregates(**comment.get("aggregates", {})),
         author=AuthorInfo(**comment["author"]) if comment.get("author") else None,
         user_voted_helpful=comment.get("user_voted_helpful", False),
@@ -376,6 +393,15 @@ async def toggle_helpful(
     Each user can only vote once per comment. Calling again removes the vote.
     """
     await require_public_profile(current_user["id"])
+
+    # Apply rate limit only when creating a new helpful vote (not when removing).
+    existing_vote = await Database.get_collection("care_club_helpful_votes").find_one(
+        {"comment_id": comment_id, "user_id": current_user["id"]},
+        {"_id": 1},
+    )
+    if not existing_vote:
+        await require_rate_limit(current_user["id"], "helpful_vote")
+
     voted, new_count = await CommentsRepository.toggle_helpful(
         post_id=post_id,
         comment_id=comment_id,
@@ -383,3 +409,40 @@ async def toggle_helpful(
     )
 
     return HelpfulVoteResponse(voted=voted, new_count=new_count)
+
+
+# ============================================================================
+# Reporting (MOD-001)
+# ============================================================================
+
+@router.post("/report", response_model=ReportResponse)
+async def report_content(
+    request: CreateReportRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Report a Care Club post/comment.
+
+    We auto-hide the target immediately to stop harm fast.
+    """
+    report = await ModerationService.create_report(
+        reporter_user_id=current_user["id"],
+        target_type=request.target_type.value,
+        target_id=request.target_id,
+        reason=request.reason.value,
+        notes=request.notes,
+    )
+
+    return ReportResponse(
+        id=report["id"],
+        reporter_user_id=report["reporter_user_id"],
+        target_type=report["target_type"],
+        target_id=report["target_id"],
+        reason=report["reason"],
+        notes=report.get("notes"),
+        status=report.get("status", "open"),
+        created_at=report["created_at"],
+        resolved_at=report.get("resolved_at"),
+        resolved_action=report.get("resolved_action"),
+        resolved_note=report.get("resolved_note"),
+    )

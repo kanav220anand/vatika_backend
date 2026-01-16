@@ -10,17 +10,18 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
 from app.core.database import Database
-from app.auth import auth_router
-from app.plants import plants_router
-from app.weather import weather_router
+from app.auth.views import router as auth_router
+from app.plants.views import router as plants_router
+from app.weather.views import router as weather_router
 from app.notifications.views import router as notifications_router
 from app.achievements.views import router as achievements_router
 from app.gamification.views import router as gamification_router
-from app.recommended_plants import recommended_plants_router
+from app.recommended_plants.views import router as recommended_plants_router
 from app.api.files import router as files_router
-from app.cities import cities_router
-from app.articles import router as articles_router
-from app.care_club import care_club_router
+from app.cities.views import router as cities_router
+from app.articles.views import router as articles_router
+from app.care_club.views import router as care_club_router
+from app.admin.moderation_views import router as admin_router
 
 settings = get_settings()
 API_PREFIX = "/api/v1/vatisha"
@@ -90,6 +91,7 @@ routers = [
     cities_router,
     articles_router,
     care_club_router,
+    admin_router,
 ]
 
 for router in routers:

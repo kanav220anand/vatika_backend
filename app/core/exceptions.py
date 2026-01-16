@@ -39,3 +39,9 @@ class ForbiddenException(AppException):
     def __init__(self, detail: str = "Forbidden"):
         super().__init__(detail=detail, status_code=status.HTTP_403_FORBIDDEN)
 
+
+class TooManyRequestsException(AppException):
+    """Rate limit exceeded."""
+
+    def __init__(self, detail: str = "You’re doing that too often. Please try again later."):
+        super().__init__(detail=detail, status_code=status.HTTP_429_TOO_MANY_REQUESTS)

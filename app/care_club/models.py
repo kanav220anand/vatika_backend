@@ -3,6 +3,7 @@
 from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel, Field, field_validator
+from enum import Enum
 
 
 # ============================================================================
@@ -94,6 +95,7 @@ class PostResponse(BaseModel):
     tried: Optional[str] = None
     photo_urls: List[str] = []
     status: str = "open"  # 'open' | 'resolved'
+    moderation_status: str = "active"  # 'active' | 'hidden' | 'removed'
     resolved_at: Optional[datetime] = None
     resolved_note: Optional[str] = None
     created_at: datetime
@@ -114,6 +116,7 @@ class PostListItem(BaseModel):
     title: str
     photo_urls: List[str] = []
     status: str
+    moderation_status: str = "active"  # 'active' | 'hidden' | 'removed'
     created_at: datetime
     last_activity_at: datetime
     aggregates: PostAggregates
@@ -143,6 +146,7 @@ class CommentResponse(BaseModel):
     body: str
     photo_urls: List[str] = []
     created_at: datetime
+    moderation_status: str = "active"  # 'active' | 'hidden' | 'removed'
     aggregates: CommentAggregates
     
     # Enriched data
@@ -168,3 +172,54 @@ class HelpfulVoteResponse(BaseModel):
     """Response after toggling helpful vote."""
     voted: bool
     new_count: int
+
+
+# ============================================================================
+# Moderation - Reports (MOD-001)
+# ============================================================================
+
+class ReportTargetType(str, Enum):
+    post = "post"
+    comment = "comment"
+
+
+class ReportReason(str, Enum):
+    spam = "spam"
+    abuse = "abuse"
+    wrong_info = "wrong_info"
+    other = "other"
+
+
+class CreateReportRequest(BaseModel):
+    target_type: ReportTargetType
+    target_id: str
+    reason: ReportReason
+    notes: Optional[str] = Field(default=None, max_length=500)
+
+
+class ReportResponse(BaseModel):
+    id: str
+    reporter_user_id: str
+    target_type: str
+    target_id: str
+    reason: str
+    notes: Optional[str] = None
+    status: str = "open"  # open | resolved
+    created_at: datetime
+    resolved_at: Optional[datetime] = None
+    resolved_action: Optional[str] = None  # restore | remove
+    resolved_note: Optional[str] = None
+
+
+class AdminReportsListResponse(BaseModel):
+    reports: List[ReportResponse]
+    total: int
+
+
+class ResolveReportRequest(BaseModel):
+    action: str = Field(..., description="restore | remove")
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+class AdminReportDetailResponse(ReportResponse):
+    snapshot: Optional[dict] = None
