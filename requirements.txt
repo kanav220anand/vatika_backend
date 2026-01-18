@@ -38,3 +38,7 @@ Pillow>=10.0.0
 
 # AWS
 boto3>=1.34.0
+
+# Jobs / Workers
+celery[sqs]==5.3.6
+anyio==4.2.0

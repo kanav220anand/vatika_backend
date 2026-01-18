@@ -49,6 +49,29 @@ class PlantAnalysisRequest(BaseModel):
     image_url: Optional[str] = Field(None, description="S3 Key or URL of plant image")
 
 
+class PlantToxicity(BaseModel):
+    """Toxicity / pet safety profile."""
+
+    cats: str = Field(default="unknown", description="safe | mildly_toxic | toxic | unknown")
+    dogs: str = Field(default="unknown", description="safe | mildly_toxic | toxic | unknown")
+    humans: str = Field(default="unknown", description="safe | irritant | toxic | unknown")
+    severity: str = Field(default="unknown", description="low | medium | high | unknown")
+    summary: Optional[str] = Field(default=None, description="1–2 lines max, calm tone")
+    symptoms: List[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0, le=1)
+
+
+class PlantPlacement(BaseModel):
+    """Indoor/outdoor classification and practical placement guidance."""
+
+    typical_environment: str = Field(default="unknown", description="indoor | outdoor | both | unknown")
+    recommended_environment: str = Field(default="unknown", description="indoor | outdoor | both | unknown")
+    reason: Optional[str] = None
+    indoor_tips: List[str] = Field(default_factory=list)
+    outdoor_tips: List[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0, le=1)
+
+
 class PlantAnalysisResponse(BaseModel):
     """Response schema for plant analysis."""
     plant_id: str = Field(..., description="Normalized plant identifier")
@@ -58,6 +81,8 @@ class PlantAnalysisResponse(BaseModel):
     confidence: float = Field(..., ge=0, le=1)
     health: PlantHealth
     care: CareSchedule
+    toxicity: Optional[PlantToxicity] = None
+    placement: Optional[PlantPlacement] = None
 
 
 class PlantCreate(BaseModel):
@@ -74,6 +99,9 @@ class PlantCreate(BaseModel):
     # Optional full analysis payloads (sent by clients after /analyze)
     care: Optional[CareSchedule] = None
     health: Optional[PlantHealth] = None
+    toxicity: Optional[PlantToxicity] = None
+    placement: Optional[PlantPlacement] = None
+    last_analysis_at: Optional[datetime] = None
     last_watered: Optional[datetime] = Field(
         default=None,
         description="When the user last watered the plant (optional; can be estimated if unknown).",
@@ -139,6 +167,9 @@ class PlantResponse(BaseModel):
         default=None,
         description="Most recent plant event time (water/photo/health/etc.)",
     )
+    toxicity: Optional[PlantToxicity] = None
+    placement: Optional[PlantPlacement] = None
+    last_analysis_at: Optional[datetime] = None
 
 
 class PlantEventResponse(BaseModel):

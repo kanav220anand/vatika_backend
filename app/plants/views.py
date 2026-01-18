@@ -107,6 +107,11 @@ async def analyze_plant(
         
         return analysis
         
+    # Avoid masking expected 4xx errors (e.g., request validation) as 500s.
+    except AppException:
+        raise
+    except ValueError as e:
+        raise BadRequestException(str(e))
     except Exception as e:
         raise AppException(f"Failed to analyze plant: {str(e)}")
 
@@ -335,6 +340,9 @@ async def analyze_thumbnail(
         
         return analysis
         
+    # Avoid masking expected 4xx errors (e.g., request validation) as 500s.
+    except AppException:
+        raise
     except ValueError as e:
         raise BadRequestException(str(e))
     except Exception as e:

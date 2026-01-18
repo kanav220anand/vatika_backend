@@ -5,6 +5,7 @@ MongoDB database connection and utilities.
 from datetime import datetime
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 import certifi
+from urllib.parse import urlparse
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -19,23 +20,28 @@ class Database:
     @classmethod
     async def connect(cls):
         """Connect to MongoDB."""
+        mongo_uri = (getattr(settings, "MONGODB_URI", "") or "").strip() or (settings.MONGO_URI or "").strip()
+        parsed = urlparse(mongo_uri)
+        path = (parsed.path or "").lstrip("/")
+        db_name = path.split("/")[0] if path else settings.MONGO_DB_NAME
+
         # Use certifi for SSL certificates to avoid handshake errors on some systems (especially macOS)
         # Configure SSL context for external databases (like Atlas)
         client_kwargs = {}
-        if "mongodb+srv://" in settings.MONGO_URI or "ssl=true" in settings.MONGO_URI.lower():
+        if "mongodb+srv://" in mongo_uri or "ssl=true" in mongo_uri.lower():
             client_kwargs["tlsCAFile"] = certifi.where()
 
         cls.client = AsyncIOMotorClient(
-            settings.MONGO_URI,
+            mongo_uri,
             **client_kwargs
         )
-        cls.db = cls.client[settings.MONGO_DB_NAME]
+        cls.db = cls.client[db_name]
         
         # Create indexes
         await cls._create_indexes()
         await cls._ensure_internal_master_docs()
         
-        print(f"Connected to MongoDB: {settings.MONGO_DB_NAME}")
+        print(f"Connected to MongoDB: {db_name}")
     
     @classmethod
     async def disconnect(cls):
@@ -84,6 +90,18 @@ class Database:
         await cls.db.rate_limits.create_index([("key", 1), ("window_start", 1)])
         await cls.db.ai_usage.create_index([("user_id", 1), ("created_at", -1)])
         await cls.db.ai_usage.create_index([("endpoint", 1), ("created_at", -1)])
+
+        # Jobs (JOBS-001)
+        await cls.db.jobs.create_index("job_id", unique=True)
+        await cls.db.jobs.create_index([("user_id", 1), ("created_at", -1)])
+        await cls.db.jobs.create_index([("status", 1), ("created_at", -1)])
+        await cls.db.jobs.create_index([("user_id", 1), ("type", 1), ("idempotency_key", 1), ("created_at", -1)])
+        retention_days = int(getattr(settings, "JOBS_RETENTION_DAYS", 0) or 0)
+        if retention_days > 0:
+            await cls.db.jobs.create_index(
+                [("created_at", 1)],
+                expireAfterSeconds=retention_days * 24 * 60 * 60,
+            )
 
         # Internal master data
         # `_id` is already uniquely indexed by Mongo; keep this non-unique for compatibility.

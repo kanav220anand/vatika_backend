@@ -7,7 +7,7 @@ from typing import Optional, List, Dict
 from openai import AsyncOpenAI
 from app.core.config import get_settings
 from app.core.aws import S3Service
-from app.plants.models import PlantAnalysisResponse, PlantHealth, CareSchedule
+from app.plants.models import PlantAnalysisResponse, PlantHealth, CareSchedule, PlantToxicity, PlantPlacement
 
 import logging
 import traceback
@@ -44,6 +44,126 @@ class OpenAIService:
             return await asyncio.wait_for(self.client.chat.completions.create(**kwargs), timeout=timeout_s)
         async with sem:
             return await asyncio.wait_for(self.client.chat.completions.create(**kwargs), timeout=timeout_s)
+
+    @staticmethod
+    def _coerce_choice(value: Optional[str], allowed: set, default: str = "unknown") -> str:
+        raw = (value or "").strip().lower()
+        raw = re.sub(r"\s+", "_", raw)
+        return raw if raw in allowed else default
+
+    @staticmethod
+    def _clamp_confidence(value: object) -> float:
+        try:
+            f = float(value)  # type: ignore[arg-type]
+        except Exception:
+            return 0.0
+        return max(0.0, min(1.0, f))
+
+    @classmethod
+    def _parse_toxicity(cls, data: dict) -> Optional[PlantToxicity]:
+        """
+        Parse optional toxicity block.
+
+        If plant identification confidence is low (< 0.6), force unknown (per ANALYSIS-001).
+        Never hard-fail if missing/invalid.
+        """
+        plant_conf = cls._clamp_confidence(data.get("confidence"))
+
+        if plant_conf < 0.6:
+            return PlantToxicity(
+                cats="unknown",
+                dogs="unknown",
+                humans="unknown",
+                severity="unknown",
+                summary="Not sure yet — scan again with clearer leaves and pot label if available.",
+                symptoms=[],
+                confidence=0.0,
+            )
+
+        tox = data.get("toxicity")
+        if not isinstance(tox, dict):
+            return None
+
+        cats = cls._coerce_choice(tox.get("cats"), {"safe", "mildly_toxic", "toxic", "unknown"})
+        dogs = cls._coerce_choice(tox.get("dogs"), {"safe", "mildly_toxic", "toxic", "unknown"})
+        humans = cls._coerce_choice(tox.get("humans"), {"safe", "irritant", "toxic", "unknown"})
+        severity = cls._coerce_choice(tox.get("severity"), {"low", "medium", "high", "unknown"})
+
+        summary = tox.get("summary")
+        if isinstance(summary, str):
+            summary = " ".join(summary.strip().split())
+            if len(summary) > 220:
+                summary = summary[:220].rstrip() + "…"
+        else:
+            summary = None
+
+        symptoms = tox.get("symptoms")
+        if not isinstance(symptoms, list):
+            symptoms = []
+        symptoms_out: List[str] = []
+        for s in symptoms:
+            if isinstance(s, str):
+                item = " ".join(s.strip().split())
+                if item:
+                    symptoms_out.append(item)
+            if len(symptoms_out) >= 8:
+                break
+
+        confidence = cls._clamp_confidence(tox.get("confidence"))
+
+        return PlantToxicity(
+            cats=cats,
+            dogs=dogs,
+            humans=humans,
+            severity=severity,
+            summary=summary,
+            symptoms=symptoms_out,
+            confidence=confidence,
+        )
+
+    @classmethod
+    def _parse_placement(cls, data: dict) -> Optional[PlantPlacement]:
+        placement = data.get("placement")
+        if not isinstance(placement, dict):
+            return None
+
+        env_allowed = {"indoor", "outdoor", "both", "unknown"}
+        typical = cls._coerce_choice(placement.get("typical_environment"), env_allowed)
+        recommended = cls._coerce_choice(placement.get("recommended_environment"), env_allowed)
+
+        reason = placement.get("reason")
+        if isinstance(reason, str):
+            reason = " ".join(reason.strip().split())
+            if len(reason) > 220:
+                reason = reason[:220].rstrip() + "…"
+        else:
+            reason = None
+
+        def clean_list(value: object, max_items: int) -> List[str]:
+            if not isinstance(value, list):
+                return []
+            out: List[str] = []
+            for v in value:
+                if isinstance(v, str):
+                    item = " ".join(v.strip().split())
+                    if item:
+                        out.append(item)
+                if len(out) >= max_items:
+                    break
+            return out
+
+        indoor_tips = clean_list(placement.get("indoor_tips"), 6)
+        outdoor_tips = clean_list(placement.get("outdoor_tips"), 6)
+        confidence = cls._clamp_confidence(placement.get("confidence"))
+
+        return PlantPlacement(
+            typical_environment=typical,
+            recommended_environment=recommended,
+            reason=reason,
+            indoor_tips=indoor_tips,
+            outdoor_tips=outdoor_tips,
+            confidence=confidence,
+        )
 
     @staticmethod
     def _normalize_primary_issue(
@@ -146,6 +266,23 @@ Analyze this plant photo and return a JSON object with the following structure:
         "humidity": "low/medium/high",
         "fertilizer_frequency": "weekly/biweekly/monthly/none",
         "indian_climate_tips": ["specific tips for Indian balcony conditions"]
+    }},
+    "toxicity": {{
+        "cats": "safe|mildly_toxic|toxic|unknown",
+        "dogs": "safe|mildly_toxic|toxic|unknown",
+        "humans": "safe|irritant|toxic|unknown",
+        "severity": "low|medium|high|unknown",
+        "summary": "1–2 lines max, calm tone",
+        "symptoms": ["optional short list"],
+        "confidence": 0.0
+    }},
+    "placement": {{
+        "typical_environment": "indoor|outdoor|both|unknown",
+        "recommended_environment": "indoor|outdoor|both|unknown",
+        "reason": "short reason",
+        "indoor_tips": ["2–4 bullets"],
+        "outdoor_tips": ["2–4 bullets"],
+        "confidence": 0.0
     }}
 }}
 
@@ -168,10 +305,15 @@ If uncertain, choose a broader category rather than a specific one (e.g., water_
 
 Consider Indian climate challenges: intense heat (40°C+), monsoons, humidity spikes, dust, pollution, and harsh afternoon sun.
 
+Critical rules for toxicity:
+- If plant identification confidence < 0.6 OR you are unsure, set cats/dogs/humans/severity to "unknown" and confidence to 0.0.
+- Never guess toxicity when uncertain.
+- Keep summary calm; no medical advice.
+
 Return ONLY the JSON object, no other text.
 
 IMPORTANT: If the image does NOT contain a real plant (e.g., it's a coffee mug, animal, person, or artificial object), return a JSON with a field "is_plant": false.
-Example: {"is_plant": false, "reason": "Image contains a coffee mug, not a plant"}"""
+Example: {{"is_plant": false, "reason": "Image contains a coffee mug, not a plant"}}"""
 
         # Prepare image content
         image_content = {}
@@ -371,6 +513,9 @@ Example: {"is_plant": false, "reason": "Image contains a coffee mug, not a plant
             fertilizer_frequency=data["care"].get("fertilizer_frequency"),
             indian_climate_tips=data["care"].get("indian_climate_tips", []),
         )
+
+        toxicity = self._parse_toxicity(data)
+        placement = self._parse_placement(data)
         
         return PlantAnalysisResponse(
             plant_id=data["plant_id"],
@@ -380,6 +525,8 @@ Example: {"is_plant": false, "reason": "Image contains a coffee mug, not a plant
             confidence=data["confidence"],
             health=health,
             care=care,
+            toxicity=toxicity,
+            placement=placement,
         )
 
     async def detect_multiple_plants(
@@ -563,6 +710,23 @@ Analyze this plant image (cropped from a larger photo) and return a JSON object:
         "humidity": "low/medium/high",
         "fertilizer_frequency": "weekly/biweekly/monthly/none",
         "indian_climate_tips": ["specific tips for Indian balcony conditions"]
+    }},
+    "toxicity": {{
+        "cats": "safe|mildly_toxic|toxic|unknown",
+        "dogs": "safe|mildly_toxic|toxic|unknown",
+        "humans": "safe|irritant|toxic|unknown",
+        "severity": "low|medium|high|unknown",
+        "summary": "1–2 lines max, calm tone",
+        "symptoms": ["optional short list"],
+        "confidence": 0.0
+    }},
+    "placement": {{
+        "typical_environment": "indoor|outdoor|both|unknown",
+        "recommended_environment": "indoor|outdoor|both|unknown",
+        "reason": "short reason",
+        "indoor_tips": ["2–4 bullets"],
+        "outdoor_tips": ["2–4 bullets"],
+        "confidence": 0.0
     }}
 }}
 
@@ -584,6 +748,11 @@ Prefer the underlying cause over visible symptoms.
 If uncertain, choose a broader category rather than a specific one (e.g., water_imbalance, environmental_change).
 
 Consider Indian climate challenges: intense heat (40°C+), monsoons, humidity, dust, and pollution.
+
+Critical rules for toxicity:
+- If plant identification confidence < 0.6 OR you are unsure, set cats/dogs/humans/severity to "unknown" and confidence to 0.0.
+- Never guess toxicity when uncertain.
+- Keep summary calm; no medical advice.
 
 Return ONLY the JSON object, no other text."""
 
@@ -780,6 +949,9 @@ Return ONLY the JSON object, no other text."""
             fertilizer_frequency=data["care"].get("fertilizer_frequency"),
             indian_climate_tips=data["care"].get("indian_climate_tips", []),
         )
+
+        toxicity = self._parse_toxicity(data)
+        placement = self._parse_placement(data)
         
         return PlantAnalysisResponse(
             plant_id=data["plant_id"],
@@ -789,4 +961,6 @@ Return ONLY the JSON object, no other text."""
             confidence=data["confidence"],
             health=health,
             care=care,
+            toxicity=toxicity,
+            placement=placement,
         )

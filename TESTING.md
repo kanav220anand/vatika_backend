@@ -50,6 +50,68 @@ The test script will:
 1. Open http://localhost:8000/docs
 2. Use the interactive API documentation to test endpoints
 
+## Jobs / Celery (INFRA-001 + JOBS-001)
+
+Local dev requirement: **use real AWS SQS** (no LocalStack).
+
+### 1) Create SQS queue (one-time)
+
+```bash
+aws sqs create-queue --queue-name vatika-default --region ap-south-1
+```
+
+### 2) Get queue URL
+
+```bash
+aws sqs get-queue-url --queue-name vatika-default --region ap-south-1
+```
+
+Copy the returned URL into `.env` as:
+
+`SQS_DEFAULT_QUEUE_URL=...`
+
+### 3) Minimal IAM permissions
+
+The AWS identity used by the API and worker must have:
+- `sqs:SendMessage`
+- `sqs:ReceiveMessage`
+- `sqs:DeleteMessage`
+- `sqs:GetQueueAttributes`
+- `sqs:GetQueueUrl`
+- `sqs:ChangeMessageVisibility` (recommended; visibility extensions/retries)
+
+Important: `CELERY_VISIBILITY_TIMEOUT` must exceed your longest task runtime or SQS may redeliver messages.
+
+### 4) Run API
+
+```bash
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+### 5) Run worker (separate terminal)
+
+```bash
+celery -A app.worker.celery_app.celery_app worker --loglevel=INFO
+```
+
+### 6) Smoke test (requires auth token)
+
+Create a `ping` job:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"ping","input":{}}' \
+  http://localhost:8000/api/v1/vatisha/jobs | jq
+```
+
+Poll until succeeded:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8000/api/v1/vatisha/jobs/<JOB_ID> | jq
+```
+
 ### Using curl
 
 See examples in the main README.md file.
@@ -119,4 +181,3 @@ docker-compose up --build
 4. **Weather** ✓
    - GET /api/v1/weather/alerts/{city} → 200 OK
    - GET /api/v1/weather/alerts → 200 OK (requires auth)
-

@@ -199,6 +199,21 @@ class PlantService:
             "last_health_check": datetime.utcnow(),
         }
 
+        # Persist latest analysis metadata if provided
+        if plant_data.toxicity:
+            plant_doc["toxicity"] = plant_data.toxicity.model_dump()
+        if plant_data.placement:
+            plant_doc["placement"] = plant_data.placement.model_dump()
+        if (
+            plant_data.health
+            or plant_data.care
+            or plant_data.confidence is not None
+            or plant_data.plant_family
+            or plant_data.toxicity
+            or plant_data.placement
+        ):
+            plant_doc["last_analysis_at"] = plant_data.last_analysis_at or datetime.utcnow()
+
         # Persist latest health details if available (from /analyze)
         if plant_data.health:
             confidence_bucket = cls._confidence_bucket(plant_data.confidence, plant_data.health.confidence)
@@ -932,4 +947,7 @@ class PlantService:
             next_water_date=cls.calculate_next_water_date(doc),
             last_health_check=doc.get("last_health_check"),
             last_event_at=doc.get("last_event_at"),
+            toxicity=doc.get("toxicity"),
+            placement=doc.get("placement"),
+            last_analysis_at=doc.get("last_analysis_at"),
         )

@@ -138,6 +138,43 @@ docker run -d -p 27017:27017 --name plantsitter-mongo mongo:7
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
+## Jobs / Celery (AWS SQS)
+
+Local dev requirement: **real AWS SQS** (no LocalStack).
+
+### 1) Create the queue (one-time)
+
+```bash
+aws sqs create-queue --queue-name vatika-default --region ap-south-1
+aws sqs get-queue-url --queue-name vatika-default --region ap-south-1
+```
+
+Put the returned URL into `.env` as:
+`SQS_DEFAULT_QUEUE_URL=...`
+
+### 2) Run the worker (separate terminal)
+
+```bash
+celery -A app.worker.celery_app.celery_app worker --loglevel=INFO
+```
+
+### Optional: run Celery Beat
+
+Beat scheduling is not configured yet (scaffold only). If/when added, run a single beat instance:
+
+```bash
+celery -A app.worker.celery_app.celery_app beat --loglevel=INFO
+```
+
+### 3) Smoke test (ping job)
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"ping","input":{}}' \
+  http://localhost:8000/api/v1/vatisha/jobs
+```
+
 ## API Endpoints
 
 ### Authentication (`/api/v1/auth`)

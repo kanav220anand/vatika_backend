@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     # MongoDB
     MONGO_URI: str = "mongodb://localhost:27017"
     MONGO_DB_NAME: str = "plantsitter"
+    # Optional combined URI (includes DB name), used by Celery worker + jobs tooling.
+    # Example: mongodb://localhost:27017/vatika
+    MONGODB_URI: str = ""
     
     # JWT
     JWT_SECRET_KEY: str = "your-super-secret-key-change-in-production"
@@ -74,12 +77,36 @@ class Settings(BaseSettings):
     CARE_CLUB_COMMENTS_PER_24H: int = 10
     CARE_CLUB_HELPFUL_VOTES_PER_24H: int = 30
 
+    # ------------------------------------------------------------------
+    # INFRA-001 / JOBS-001: Celery (SQS broker) + Mongo jobs store
+    # ------------------------------------------------------------------
+    CELERY_BROKER_URL: str = "sqs://"
+    CELERY_QUEUE_PREFIX: str = "vatika-"
+    SQS_DEFAULT_QUEUE_NAME: str = "vatika-default"
+    SQS_DEFAULT_QUEUE_URL: str = ""
+
+    CELERY_VISIBILITY_TIMEOUT: int = 3600
+    CELERY_POLLING_INTERVAL: float = 1
+    CELERY_WAIT_TIME_SECONDS: int = 10
+    CELERY_TASK_TIME_LIMIT: int = 420
+    CELERY_TASK_SOFT_TIME_LIMIT: int = 360
+
+    JOBS_RETENTION_DAYS: int = 30
+    DEBUG_JOBS_ENDPOINTS: bool = False
+    JOBS_MAX_INPUT_BYTES: int = 20_000
+    JOBS_IDEMPOTENCY_WINDOW_HOURS: int = 6
+
     @field_validator(
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
         "AWS_REGION",
         "AWS_S3_BUCKET",
         "S3_BASE_URL",
+        "MONGODB_URI",
+        "CELERY_BROKER_URL",
+        "CELERY_QUEUE_PREFIX",
+        "SQS_DEFAULT_QUEUE_NAME",
+        "SQS_DEFAULT_QUEUE_URL",
         mode="before",
     )
     @classmethod
