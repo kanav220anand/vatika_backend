@@ -1,7 +1,6 @@
 """Plant service - handles plant CRUD and knowledge base operations."""
 
 import base64
-import math
 from datetime import datetime, timedelta
 from typing import Optional, List
 from uuid import uuid4
@@ -15,6 +14,7 @@ from app.plants.models import (
     PlantResponse,
     PlantAnalysisResponse,
     CareSchedule,
+    SoilAssessment,
 )
 from app.plants.care_utils import convert_care_schedule_to_stored
 from app.plants.video_service import ImageService
@@ -40,22 +40,32 @@ class PlantService:
         return ObjectId(id_str)
     
     @staticmethod
-    def get_current_season() -> str:
-        """Return current season based on Indian climate."""
-        month = datetime.utcnow().month
-        if month in [3, 4, 5]:      # Mar-May: Summer
+    def get_season_for_date(dt: datetime) -> str:
+        """
+        Return season based on Indian climate for a given anchor date.
+
+        Why this exists (GAME-001 fix):
+        - We must anchor watering intervals to the month of the *anchor* (last_watered/created_at),
+          not "now", otherwise due dates shift when seasons change.
+        """
+        month = (dt or datetime.utcnow()).month
+        if month in [3, 4, 5]:  # Mar-May: Summer
             return "summer"
-        elif month in [6, 7, 8, 9]: # Jun-Sept: Monsoon
+        if month in [6, 7, 8, 9]:  # Jun-Sept: Monsoon
             return "monsoon"
-        else:                        # Oct-Feb: Winter
-            return "winter"
+        return "winter"  # Oct-Feb: Winter
+
+    @classmethod
+    def get_current_season(cls) -> str:
+        """Return current season (kept for backward compatibility)."""
+        return cls.get_season_for_date(datetime.utcnow())
     
     @classmethod
     def calculate_next_water_date(cls, plant_doc: dict) -> Optional[datetime]:
         """Calculate when plant needs water next based on care schedule."""
         last_watered = plant_doc.get("last_watered")
         care = plant_doc.get("care_schedule")
-        
+
         if not care:
             return None
         
@@ -63,13 +73,20 @@ class PlantService:
         if not watering:
             return None
         
-        season = cls.get_current_season()
+        created_at = plant_doc.get("created_at")
+
+        # Anchor season to the baseline date so intervals remain stable across season changes.
+        # Example:
+        # - last_watered = May 30 (summer) and interval = 3 days -> next = Jun 2 (still uses summer interval)
+        #   even if "now" is in monsoon months.
+        anchor = last_watered or created_at or datetime.utcnow()
+        season = cls.get_season_for_date(anchor)
         days = watering.get(season, 3)  # Default 3 days
-        
+
         if last_watered:
             return last_watered + timedelta(days=days)
-        # If never watered, default to created_at baseline (prevents immediate "overdue" on new plants)
-        created_at = plant_doc.get("created_at") or datetime.utcnow()
+        # If never watered, default to created_at baseline (prevents immediate "overdue" on new plants).
+        created_at = created_at or datetime.utcnow()
         return created_at + timedelta(days=days)
 
     @staticmethod
@@ -181,6 +198,17 @@ class PlantService:
             if care_source:
                 care_schedule_doc = convert_care_schedule_to_stored(care_source)
         
+        last_watered_source = (plant_data.last_watered_source or "").strip() or None
+        if plant_data.last_watered is None:
+            last_watered_source = "unknown"
+        elif last_watered_source is None:
+            # Older clients may send a timestamp without a source; treat as exact.
+            last_watered_source = "user_exact"
+        else:
+            allowed_sources = {"user_exact", "user_estimate", "unknown"}
+            if last_watered_source not in allowed_sources:
+                last_watered_source = "unknown" if plant_data.last_watered is None else "user_exact"
+
         plant_doc = {
             "user_id": user_id,
             "plant_id": plant_data.plant_id,
@@ -191,6 +219,7 @@ class PlantService:
             "health_status": plant_data.health_status,
             "notes": plant_data.notes,
             "last_watered": plant_data.last_watered,
+            "last_watered_source": last_watered_source,
             "watering_streak": 0,
             "created_at": datetime.utcnow(),
             # Care reminder fields
@@ -239,19 +268,49 @@ class PlantService:
         result = await collection.insert_one(plant_doc)
         plant_doc["_id"] = result.inserted_id
 
-        # Save initial health snapshot for timeline/history
-        if plant_data.health:
+        # ANALYSIS-002: Create an initial snapshot for the plant's cover image (append-only timeline).
+        if plant_data.image_url:
             try:
-                await cls.save_health_snapshot(
+                from app.plants.soil_logic import compute_soil_hint
+
+                analysis_doc = {
+                    "plant_id": plant_data.plant_id,
+                    "scientific_name": plant_data.scientific_name,
+                    "common_name": plant_data.common_name,
+                    "plant_family": plant_data.plant_family,
+                    "confidence": plant_data.confidence,
+                    "health": plant_data.health.model_dump(exclude_none=True) if plant_data.health else None,
+                    "care": plant_data.care.model_dump(exclude_none=True) if plant_data.care else None,
+                    "toxicity": plant_data.toxicity.model_dump(exclude_none=True) if plant_data.toxicity else None,
+                    "placement": plant_data.placement.model_dump(exclude_none=True) if plant_data.placement else None,
+                }
+                # Keep analysis payload compact and avoid storing nulls.
+                analysis_doc = {k: v for k, v in analysis_doc.items() if v is not None}
+
+                soil_hint = compute_soil_hint(plant_data.soil) if plant_data.soil else None
+
+                snapshot = await cls.save_health_snapshot(
                     plant_id=str(result.inserted_id),
                     user_id=user_id,
-                    health_status=plant_data.health.status,
-                    confidence=plant_data.health.confidence,
-                    issues=plant_data.health.issues,
-                    immediate_actions=plant_data.health.immediate_actions,
+                    health_status=(plant_data.health.status if plant_data.health else plant_doc.get("health_status", "unknown")),
+                    confidence=(plant_data.health.confidence if plant_data.health else float(plant_doc.get("health_confidence") or 0.0)),
+                    issues=(plant_data.health.issues if plant_data.health else plant_doc.get("health_issues") or []),
+                    immediate_actions=(plant_data.health.immediate_actions if plant_data.health else plant_doc.get("health_immediate_actions") or []),
                     image_url=plant_data.image_url,
+                    snapshot_type="initial",
+                    analysis=analysis_doc,
+                    soil=plant_data.soil,
+                    soil_hint=soil_hint.model_dump(exclude_none=True) if soil_hint else None,
+                )
+
+                # Keep a pointer to the initial snapshot for fast access.
+                plant_doc["initial_snapshot_id"] = str(snapshot["_id"])
+                await collection.update_one(
+                    {"_id": result.inserted_id, "user_id": user_id},
+                    {"$set": {"initial_snapshot_id": str(snapshot["_id"])}},
                 )
             except Exception:
+                # Never fail plant creation due to timeline snapshot issues.
                 pass
         
         # Generate health notification if plant is not healthy
@@ -478,15 +537,22 @@ class PlantService:
         settings = get_settings()
         now = datetime.utcnow()
 
-        # Capture schedule context BEFORE update (for event narrative)
-        next_before = cls.calculate_next_water_date(plant)
-        recommended_at = next_before
         streak_before = int(plant.get("watering_streak") or 0)
+
+        # Capture schedule context BEFORE update (for event narrative).
+        # IMPORTANT: If last_watered is missing, do not classify timing (baseline watering).
+        had_history = bool(plant.get("last_watered"))
+        next_before = cls.calculate_next_water_date(plant)
+        recommended_at: Optional[datetime] = next_before if had_history else None
 
         timing: Optional[str] = None
         delta_days: Optional[int] = None
-        if recommended_at:
-            delta_days = int(math.floor((now - recommended_at).total_seconds() / 86400))
+
+        if had_history and recommended_at:
+            # Calendar-day delta avoids off-by-one due to floor(seconds/86400).
+            # Example: recommended=Jan 10, now=Jan 20 => delta_days=10 (not 9/11 depending on time-of-day).
+            delta_days = (now.date() - recommended_at.date()).days
+
             if delta_days < -int(settings.WATERING_GRACE_DAYS_EARLY):
                 timing = "early"
             elif delta_days > int(settings.WATERING_GRACE_DAYS_LATE):
@@ -494,17 +560,27 @@ class PlantService:
             else:
                 timing = "on_time"
 
-        # Apply safe streak rule (prevents overwatering to game streaks)
-        if timing == "on_time":
-            streak_after = streak_before + 1
-        elif timing == "late":
-            streak_after = 0
+            # Apply safe streak rule (prevents overwatering to game streaks)
+            if timing == "on_time":
+                streak_after = streak_before + 1
+            elif timing == "late":
+                streak_after = 0
+            else:
+                streak_after = streak_before
         else:
+            # Baseline watering: no reward/punish since we don't know prior schedule adherence.
+            # Example: new plant (last_watered=None) -> timing=None, delta_days=None, streak unchanged.
+            timing = None
+            delta_days = None
             streak_after = streak_before
         
+        update_fields = {"last_watered": now, "watering_streak": streak_after}
+        if not plant.get("last_watered"):
+            update_fields["last_watered_source"] = "user_exact"
+
         result = await collection.find_one_and_update(
             {"_id": object_id, "user_id": user_id},
-            {"$set": {"last_watered": now, "watering_streak": streak_after}},
+            {"$set": update_fields},
             return_document=True
         )
 
@@ -645,25 +721,85 @@ class PlantService:
         immediate_actions: list = None,
         image_key: str = None,
         thumbnail_key: str = None,
-        image_url: str = None  # backwards-compat (old field name)
+        image_url: str = None,  # backwards-compat (old field name)
+        snapshot_type: str = "progress",
+        analysis: Optional[dict] = None,
+        soil: Optional[SoilAssessment] = None,
+        soil_hint: Optional[dict] = None,
     ) -> dict:
         """Save a health snapshot for a plant."""
         collection = cls._get_health_snapshots_collection()
 
+        created_at = datetime.utcnow()
+        snapshot_type = (snapshot_type or "").strip().lower() or "progress"
+        if snapshot_type not in {"initial", "progress"}:
+            snapshot_type = "progress"
+
+        # Enforce one initial snapshot per plant (code guard; avoids failures).
+        if snapshot_type == "initial":
+            try:
+                existing = await collection.find_one(
+                    {"plant_id": plant_id, "user_id": user_id, "snapshot_type": "initial"},
+                    projection={"_id": 1},
+                )
+                if existing:
+                    snapshot_type = "progress"
+            except Exception:
+                snapshot_type = "progress"
+
         snapshot = {
             "plant_id": plant_id,
             "user_id": user_id,
+            "snapshot_type": snapshot_type,
             "health_status": health_status,
             "confidence": confidence,
             "issues": issues or [],
             "immediate_actions": immediate_actions or [],
             "image_key": image_key or image_url,
             "thumbnail_key": thumbnail_key,
-            "created_at": datetime.utcnow()
+            "created_at": created_at,
         }
+
+        if isinstance(analysis, dict) and analysis:
+            snapshot["analysis"] = analysis
+
+        if soil is not None:
+            try:
+                soil_doc = soil.model_dump(exclude_none=True)
+            except Exception:
+                soil_doc = None
+            if isinstance(soil_doc, dict):
+                soil_doc["observed_at"] = created_at
+                snapshot["soil"] = soil_doc
+
+        if isinstance(soil_hint, dict) and soil_hint:
+            snapshot["soil_hint"] = soil_hint
 
         result = await collection.insert_one(snapshot)
         snapshot["_id"] = result.inserted_id
+
+        # Update lightweight latest soil_state cache on plant (best-effort).
+        if "soil" in snapshot and isinstance(snapshot.get("soil"), dict):
+            try:
+                from app.core.config import get_settings
+
+                threshold = float(getattr(get_settings(), "SOIL_CONFIDENCE_THRESHOLD", 0.6))
+                soil_doc = snapshot["soil"]
+                if bool(soil_doc.get("visible")) and float(soil_doc.get("confidence") or 0.0) >= threshold:
+                    dryness = str(soil_doc.get("dryness") or "unknown")
+                    soil_state_doc = {
+                        "visible": True,
+                        "confidence": float(soil_doc.get("confidence") or 0.0),
+                        "dryness": dryness,
+                        "observed_at": created_at,
+                    }
+                    if ObjectId.is_valid(plant_id):
+                        await cls._get_plants_collection().update_one(
+                            {"_id": ObjectId(plant_id), "user_id": user_id},
+                            {"$set": {"soil_state": soil_state_doc}},
+                        )
+            except Exception:
+                pass
         
         return snapshot
     
@@ -783,6 +919,13 @@ class PlantService:
         confidence_bucket = cls._confidence_bucket(analysis.confidence, health.confidence)
 
         # Save snapshot and update plant latest health fields
+        from app.plants.soil_logic import compute_soil_hint
+
+        analysis_doc = analysis.model_dump(exclude_none=True)
+        analysis_doc.pop("soil", None)
+        soil = analysis.soil
+        soil_hint = compute_soil_hint(soil) if soil else None
+
         snapshot = await cls.save_health_snapshot(
             plant_id=plant_id,
             user_id=user_id,
@@ -792,6 +935,10 @@ class PlantService:
             immediate_actions=health.immediate_actions,
             image_key=image_key,
             thumbnail_key=thumb_key,
+            snapshot_type="progress",
+            analysis=analysis_doc,
+            soil=soil,
+            soil_hint=soil_hint.model_dump(exclude_none=True) if soil_hint else None,
         )
 
         await plants_collection.update_one(
@@ -940,6 +1087,7 @@ class PlantService:
             immediate_fixes=immediate_fixes,
             notes=doc.get("notes"),
             last_watered=doc.get("last_watered"),
+            last_watered_source=doc.get("last_watered_source") or ("unknown" if not doc.get("last_watered") else "user_exact"),
             watering_streak=doc.get("watering_streak", 0),
             created_at=doc["created_at"],
             care_schedule=care_schedule,
@@ -949,5 +1097,7 @@ class PlantService:
             last_event_at=doc.get("last_event_at"),
             toxicity=doc.get("toxicity"),
             placement=doc.get("placement"),
+            soil_state=doc.get("soil_state"),
+            initial_snapshot_id=doc.get("initial_snapshot_id"),
             last_analysis_at=doc.get("last_analysis_at"),
         )

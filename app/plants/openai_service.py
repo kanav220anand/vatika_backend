@@ -7,7 +7,23 @@ from typing import Optional, List, Dict
 from openai import AsyncOpenAI
 from app.core.config import get_settings
 from app.core.aws import S3Service
-from app.plants.models import PlantAnalysisResponse, PlantHealth, CareSchedule, PlantToxicity, PlantPlacement
+from app.plants.models import (
+    PlantAnalysisResponse,
+    PlantHealth,
+    CareSchedule,
+    PlantToxicity,
+    PlantPlacement,
+    SoilAssessment,
+    SoilDryness,
+    SoilStructure,
+    SoilDrainageRisk,
+    SoilLikelihood,
+    SoilRisk,
+    TopsoilCoverage,
+    DebrisLevel,
+    SoilSurfaceSignals,
+    SoilTopLayer,
+)
 
 import logging
 import traceback
@@ -58,6 +74,136 @@ class OpenAIService:
         except Exception:
             return 0.0
         return max(0.0, min(1.0, f))
+
+    @classmethod
+    def _parse_soil(cls, data: dict) -> Optional[SoilAssessment]:
+        """
+        Parse optional soil block (ANALYSIS-002).
+
+        Rules:
+        - If soil not present -> None
+        - If visible=false -> force unknown enums, confidence<=0.4, evidence=[]
+        - Never hard-fail: invalid enums are coerced to "unknown"
+        """
+        soil = data.get("soil")
+        if not isinstance(soil, dict):
+            return None
+
+        visible = bool(soil.get("visible"))
+        confidence = cls._clamp_confidence(soil.get("confidence"))
+
+        dryness_allowed = {e.value for e in SoilDryness}
+        structure_allowed = {e.value for e in SoilStructure}
+        drainage_allowed = {e.value for e in SoilDrainageRisk}
+        likelihood_allowed = {e.value for e in SoilLikelihood}
+        risk_allowed = {e.value for e in SoilRisk}
+        coverage_allowed = {e.value for e in TopsoilCoverage}
+        debris_allowed = {e.value for e in DebrisLevel}
+
+        def clean_str_list(value: object, max_items: int, max_len: int) -> List[str]:
+            if not isinstance(value, list):
+                return []
+            out: List[str] = []
+            for item in value:
+                if not isinstance(item, str):
+                    continue
+                cleaned = " ".join(item.strip().split())
+                if not cleaned:
+                    continue
+                if len(cleaned) > max_len:
+                    cleaned = cleaned[:max_len].rstrip() + "…"
+                out.append(cleaned)
+                if len(out) >= max_items:
+                    break
+            return out
+
+        notes = soil.get("notes")
+        if isinstance(notes, str):
+            notes = " ".join(notes.strip().split())
+            if len(notes) > 200:
+                notes = notes[:200].rstrip() + "…"
+        else:
+            notes = None
+
+        if not visible:
+            return SoilAssessment(
+                visible=False,
+                confidence=min(confidence, 0.4),
+                dryness=SoilDryness.UNKNOWN,
+                structure=SoilStructure.UNKNOWN,
+                drainage_risk=SoilDrainageRisk.UNKNOWN,
+                surface_signals=SoilSurfaceSignals(
+                    mold_or_algae=SoilLikelihood.UNKNOWN,
+                    salt_crust=SoilLikelihood.UNKNOWN,
+                    fungus_gnats_risk=SoilRisk.UNKNOWN,
+                ),
+                top_layer=SoilTopLayer(
+                    mulch_present=None,
+                    topsoil_coverage=TopsoilCoverage.UNKNOWN,
+                    debris_level=DebrisLevel.UNKNOWN,
+                ),
+                evidence=[],
+                notes=None,
+                observed_at=None,
+            )
+
+        dryness = cls._coerce_choice(soil.get("dryness"), dryness_allowed, default=SoilDryness.UNKNOWN.value)
+        structure = cls._coerce_choice(soil.get("structure"), structure_allowed, default=SoilStructure.UNKNOWN.value)
+        drainage_risk = cls._coerce_choice(soil.get("drainage_risk"), drainage_allowed, default=SoilDrainageRisk.UNKNOWN.value)
+
+        surface = soil.get("surface_signals")
+        if not isinstance(surface, dict):
+            surface = {}
+        mold_or_algae = cls._coerce_choice(surface.get("mold_or_algae"), likelihood_allowed, default=SoilLikelihood.UNKNOWN.value)
+        salt_crust = cls._coerce_choice(surface.get("salt_crust"), likelihood_allowed, default=SoilLikelihood.UNKNOWN.value)
+        fungus_gnats_risk = cls._coerce_choice(surface.get("fungus_gnats_risk"), risk_allowed, default=SoilRisk.UNKNOWN.value)
+
+        top_layer = soil.get("top_layer")
+        if not isinstance(top_layer, dict):
+            top_layer = {}
+
+        mulch_present_val = top_layer.get("mulch_present")
+        mulch_present: Optional[bool]
+        if isinstance(mulch_present_val, bool):
+            mulch_present = mulch_present_val
+        elif isinstance(mulch_present_val, str) and mulch_present_val.strip().lower() == "unknown":
+            mulch_present = None
+        else:
+            mulch_present = None
+
+        topsoil_coverage = cls._coerce_choice(
+            top_layer.get("topsoil_coverage"),
+            coverage_allowed,
+            default=TopsoilCoverage.UNKNOWN.value,
+        )
+        debris_level = cls._coerce_choice(
+            top_layer.get("debris_level"),
+            debris_allowed,
+            default=DebrisLevel.UNKNOWN.value,
+        )
+
+        evidence = clean_str_list(soil.get("evidence"), max_items=4, max_len=80)
+
+        return SoilAssessment(
+            visible=True,
+            confidence=confidence,
+            dryness=dryness,
+            structure=structure,
+            drainage_risk=drainage_risk,
+            surface_signals=SoilSurfaceSignals(
+                mold_or_algae=mold_or_algae,
+                salt_crust=salt_crust,
+                fungus_gnats_risk=fungus_gnats_risk,
+            ),
+            top_layer=SoilTopLayer(
+                mulch_present=mulch_present,
+                topsoil_coverage=topsoil_coverage,
+                debris_level=debris_level,
+            ),
+            evidence=evidence,
+            notes=notes,
+            observed_at=None,
+        )
 
     @classmethod
     def _parse_toxicity(cls, data: dict) -> Optional[PlantToxicity]:
@@ -283,6 +429,25 @@ Analyze this plant photo and return a JSON object with the following structure:
         "indoor_tips": ["2–4 bullets"],
         "outdoor_tips": ["2–4 bullets"],
         "confidence": 0.0
+    }},
+    "soil": {{
+        "visible": true/false,
+        "confidence": 0.0-1.0,
+        "dryness": "very_dry|dry|moist|wet|waterlogged|unknown",
+        "structure": "compacted|normal|airy|unknown",
+        "drainage_risk": "low|medium|high|unknown",
+        "surface_signals": {{
+            "mold_or_algae": "none|possible|likely|unknown",
+            "salt_crust": "none|possible|likely|unknown",
+            "fungus_gnats_risk": "low|medium|high|unknown"
+        }},
+        "top_layer": {{
+            "mulch_present": true/false/null,
+            "topsoil_coverage": "good|patchy|bare|unknown",
+            "debris_level": "low|medium|high|unknown"
+        }},
+        "evidence": ["max 4 short visual cues"],
+        "notes": "optional <=200 chars"
     }}
 }}
 
@@ -309,6 +474,13 @@ Critical rules for toxicity:
 - If plant identification confidence < 0.6 OR you are unsure, set cats/dogs/humans/severity to "unknown" and confidence to 0.0.
 - Never guess toxicity when uncertain.
 - Keep summary calm; no medical advice.
+
+Critical rules for soil:
+- FIRST decide if the soil surface is clearly visible.
+- If soil is not clearly visible: visible=false, confidence<=0.4, set all enums to "unknown", evidence=[].
+- Do NOT diagnose diseases. Only surface-level signals (wet/dry, crust, green film, etc).
+- Evidence must be short visual cues only (e.g., "cracked dry surface", "dark glossy soil", "white crust", "green film").
+- Use ONLY the provided enum values.
 
 Return ONLY the JSON object, no other text.
 
@@ -516,6 +688,7 @@ Example: {{"is_plant": false, "reason": "Image contains a coffee mug, not a plan
 
         toxicity = self._parse_toxicity(data)
         placement = self._parse_placement(data)
+        soil = self._parse_soil(data)
         
         return PlantAnalysisResponse(
             plant_id=data["plant_id"],
@@ -527,6 +700,7 @@ Example: {{"is_plant": false, "reason": "Image contains a coffee mug, not a plan
             care=care,
             toxicity=toxicity,
             placement=placement,
+            soil=soil,
         )
 
     async def detect_multiple_plants(
@@ -727,6 +901,25 @@ Analyze this plant image (cropped from a larger photo) and return a JSON object:
         "indoor_tips": ["2–4 bullets"],
         "outdoor_tips": ["2–4 bullets"],
         "confidence": 0.0
+    }},
+    "soil": {{
+        "visible": true/false,
+        "confidence": 0.0-1.0,
+        "dryness": "very_dry|dry|moist|wet|waterlogged|unknown",
+        "structure": "compacted|normal|airy|unknown",
+        "drainage_risk": "low|medium|high|unknown",
+        "surface_signals": {{
+            "mold_or_algae": "none|possible|likely|unknown",
+            "salt_crust": "none|possible|likely|unknown",
+            "fungus_gnats_risk": "low|medium|high|unknown"
+        }},
+        "top_layer": {{
+            "mulch_present": true/false/null,
+            "topsoil_coverage": "good|patchy|bare|unknown",
+            "debris_level": "low|medium|high|unknown"
+        }},
+        "evidence": ["max 4 short visual cues"],
+        "notes": "optional <=200 chars"
     }}
 }}
 
@@ -753,6 +946,13 @@ Critical rules for toxicity:
 - If plant identification confidence < 0.6 OR you are unsure, set cats/dogs/humans/severity to "unknown" and confidence to 0.0.
 - Never guess toxicity when uncertain.
 - Keep summary calm; no medical advice.
+
+Critical rules for soil:
+- FIRST decide if the soil surface is clearly visible.
+- If soil is not clearly visible: visible=false, confidence<=0.4, set all enums to "unknown", evidence=[].
+- Do NOT diagnose diseases. Only surface-level signals (wet/dry, crust, green film, etc).
+- Evidence must be short visual cues only.
+- Use ONLY the provided enum values.
 
 Return ONLY the JSON object, no other text."""
 
@@ -952,6 +1152,7 @@ Return ONLY the JSON object, no other text."""
 
         toxicity = self._parse_toxicity(data)
         placement = self._parse_placement(data)
+        soil = self._parse_soil(data)
         
         return PlantAnalysisResponse(
             plant_id=data["plant_id"],
@@ -963,4 +1164,5 @@ Return ONLY the JSON object, no other text."""
             care=care,
             toxicity=toxicity,
             placement=placement,
+            soil=soil,
         )

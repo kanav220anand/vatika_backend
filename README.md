@@ -11,6 +11,7 @@ An intelligent plant care backend that helps urban Indians keep their balcony pl
 - 🌤️ **Weather Alerts** - Receive alerts for extreme weather conditions (heatwaves, heavy rain, cold snaps)
 - 🏠 **Plant Collection** - Manage your personal plant collection with tracking
 - 🇮🇳 **India-First** - Optimized for Indian climate conditions (heat, monsoon, dust, pollution)
+- 💧 **Watering Nudges (Anti-spam)** - Per-plant reminders only when due/overdue, plus a single daily “Check soil” summary for plants with unknown watering history
 
 ## Tech Stack
 

@@ -3,6 +3,7 @@
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
+from enum import Enum
 
 
 class PlantHealth(BaseModel):
@@ -72,6 +73,106 @@ class PlantPlacement(BaseModel):
     confidence: float = Field(default=0.0, ge=0, le=1)
 
 
+# ==================== Soil Models (ANALYSIS-002) ====================
+
+
+class SoilDryness(str, Enum):
+    VERY_DRY = "very_dry"
+    DRY = "dry"
+    MOIST = "moist"
+    WET = "wet"
+    WATERLOGGED = "waterlogged"
+    UNKNOWN = "unknown"
+
+
+class SoilStructure(str, Enum):
+    COMPACTED = "compacted"
+    NORMAL = "normal"
+    AIRY = "airy"
+    UNKNOWN = "unknown"
+
+
+class SoilDrainageRisk(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    UNKNOWN = "unknown"
+
+
+class SoilLikelihood(str, Enum):
+    NONE = "none"
+    POSSIBLE = "possible"
+    LIKELY = "likely"
+    UNKNOWN = "unknown"
+
+
+class SoilRisk(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    UNKNOWN = "unknown"
+
+
+class TopsoilCoverage(str, Enum):
+    GOOD = "good"
+    PATCHY = "patchy"
+    BARE = "bare"
+    UNKNOWN = "unknown"
+
+
+class DebrisLevel(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    UNKNOWN = "unknown"
+
+
+class HintStatus(str, Enum):
+    OK = "ok"
+    WATCH = "watch"
+    ACTION = "action"
+
+
+class SoilSurfaceSignals(BaseModel):
+    mold_or_algae: SoilLikelihood = SoilLikelihood.UNKNOWN
+    salt_crust: SoilLikelihood = SoilLikelihood.UNKNOWN
+    fungus_gnats_risk: SoilRisk = SoilRisk.UNKNOWN
+
+
+class SoilTopLayer(BaseModel):
+    mulch_present: Optional[bool] = None
+    topsoil_coverage: TopsoilCoverage = TopsoilCoverage.UNKNOWN
+    debris_level: DebrisLevel = DebrisLevel.UNKNOWN
+
+
+class SoilAssessment(BaseModel):
+    visible: bool = False
+    confidence: float = Field(default=0.0, ge=0, le=1)
+    dryness: SoilDryness = SoilDryness.UNKNOWN
+    structure: SoilStructure = SoilStructure.UNKNOWN
+    drainage_risk: SoilDrainageRisk = SoilDrainageRisk.UNKNOWN
+    surface_signals: SoilSurfaceSignals = Field(default_factory=SoilSurfaceSignals)
+    top_layer: SoilTopLayer = Field(default_factory=SoilTopLayer)
+    evidence: List[str] = Field(default_factory=list, description="Max 4 short cues")
+    notes: Optional[str] = Field(default=None, description="<= 200 chars")
+    observed_at: Optional[datetime] = None
+
+
+class SoilState(BaseModel):
+    visible: bool = False
+    confidence: float = Field(default=0.0, ge=0, le=1)
+    dryness: SoilDryness = SoilDryness.UNKNOWN
+    observed_at: datetime
+
+
+class SoilHint(BaseModel):
+    status: HintStatus
+    headline: str = Field(..., max_length=60)
+    action: str = Field(..., max_length=90)
+    confidence: float = Field(default=0.0, ge=0, le=1)
+    relevant_factors: List[str] = Field(default_factory=list, description="Max 4")
+
+
 class PlantAnalysisResponse(BaseModel):
     """Response schema for plant analysis."""
     plant_id: str = Field(..., description="Normalized plant identifier")
@@ -83,6 +184,7 @@ class PlantAnalysisResponse(BaseModel):
     care: CareSchedule
     toxicity: Optional[PlantToxicity] = None
     placement: Optional[PlantPlacement] = None
+    soil: Optional["SoilAssessment"] = None
 
 
 class PlantCreate(BaseModel):
@@ -101,10 +203,15 @@ class PlantCreate(BaseModel):
     health: Optional[PlantHealth] = None
     toxicity: Optional[PlantToxicity] = None
     placement: Optional[PlantPlacement] = None
+    soil: Optional["SoilAssessment"] = None
     last_analysis_at: Optional[datetime] = None
     last_watered: Optional[datetime] = Field(
         default=None,
         description="When the user last watered the plant (optional; can be estimated if unknown).",
+    )
+    last_watered_source: Optional[str] = Field(
+        default=None,
+        description="user_exact | user_estimate | unknown",
     )
     notes: Optional[str] = None
     care_schedule: Optional[CareScheduleStored] = None  # Stored care data
@@ -156,6 +263,10 @@ class PlantResponse(BaseModel):
     immediate_fixes: List[ImmediateFixItem] = Field(default_factory=list)
     notes: Optional[str] = None
     last_watered: Optional[datetime] = None
+    last_watered_source: Optional[str] = Field(
+        default=None,
+        description="user_exact | user_estimate | unknown",
+    )
     watering_streak: int = 0  # Consecutive days watered on schedule
     created_at: datetime
     # Care reminder fields
@@ -169,6 +280,8 @@ class PlantResponse(BaseModel):
     )
     toxicity: Optional[PlantToxicity] = None
     placement: Optional[PlantPlacement] = None
+    soil_state: Optional["SoilState"] = None
+    initial_snapshot_id: Optional[str] = None
     last_analysis_at: Optional[datetime] = None
 
 
@@ -266,6 +379,10 @@ class HealthSnapshot(BaseModel):
     immediate_actions: List[str] = Field(default_factory=list)
     image_url: Optional[str] = None
     thumbnail_url: Optional[str] = None
+    snapshot_type: Optional[str] = Field(default=None, description="initial | progress")
+    analysis: Optional[Dict[str, Any]] = None
+    soil: Optional["SoilAssessment"] = None
+    soil_hint: Optional["SoilHint"] = None
     created_at: datetime
 
 

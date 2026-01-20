@@ -65,6 +65,14 @@ class Settings(BaseSettings):
     # Set to 0 to disable the weekly restriction for testing.
     PLANT_TIMELINE_MIN_DAYS_BETWEEN_SNAPSHOTS: int = 7
 
+    # ------------------------------------------------------------------
+    # ANALYSIS-002: Soil signals (day-shift modifiers)
+    # ------------------------------------------------------------------
+    SOIL_CONFIDENCE_THRESHOLD: float = 0.6
+    SOIL_MAX_AGE_DAYS: int = 3
+    SOIL_RECENT_WATERING_IGNORE_HOURS: int = 24
+    SOIL_SHIFT_MAX_DAYS: int = 2
+
     # Watering streak timing grace windows (schedule-aware streaks)
     WATERING_GRACE_DAYS_EARLY: int = 1
     WATERING_GRACE_DAYS_LATE: int = 1

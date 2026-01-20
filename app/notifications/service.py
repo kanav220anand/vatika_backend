@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta
 from typing import Optional, List
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 
 from app.core.database import Database
 from app.core.exceptions import NotFoundException
@@ -13,6 +14,7 @@ from app.notifications.models import (
     NotificationType,
     NotificationPriority,
 )
+from app.plants.watering_engine import compute_watering_recommendation
 
 
 class NotificationService:
@@ -46,6 +48,10 @@ class NotificationService:
 
         # First, handle known v1 types explicitly.
         if t == NotificationType.WATER_REMINDER.value:
+            return cls._ICON_PATHS["water"]
+        if t == NotificationType.WATER_CHECK.value:
+            return cls._ICON_PATHS["water"]
+        if t == NotificationType.WATER_CHECK_SUMMARY.value:
             return cls._ICON_PATHS["water"]
         if t == NotificationType.ACTION_REQUIRED.value:
             return cls._ICON_PATHS["task"]
@@ -100,11 +106,29 @@ class NotificationService:
             "is_read": False,
             "created_at": datetime.utcnow(),
         }
+        # Only include dedupe_key when set; otherwise it would store null and break sparse unique indexes.
+        if data.dedupe_key:
+            doc["dedupe_key"] = data.dedupe_key
+        # Only include metadata when present; keep docs small.
+        if data.metadata:
+            doc["metadata"] = data.metadata
         
         result = await collection.insert_one(doc)
         doc["_id"] = result.inserted_id
         
         return cls._doc_to_response(doc)
+
+    @classmethod
+    async def create_notification_deduped(cls, data: NotificationCreate) -> Optional[NotificationResponse]:
+        """
+        Create a notification, but return None if it already exists (dedupe_key unique).
+
+        We intentionally avoid pre-check reads; the unique index is the source of truth.
+        """
+        try:
+            return await cls.create_notification(data)
+        except DuplicateKeyError:
+            return None
     
     @classmethod
     async def get_user_notifications(
@@ -375,26 +399,107 @@ class NotificationService:
         plants_collection = cls._get_plants_collection()
         notifications = []
         
-        # Find plants that might need watering
-        cursor = plants_collection.find({"user_id": user_id})
-        
-        async for plant in cursor:
-            last_watered = plant.get("last_watered")
-            if not last_watered:
-                continue
-            
-            days_since = (datetime.utcnow() - last_watered).days
-            
-            # Simple threshold: remind if > 3 days (can be made smarter with care schedule)
-            if days_since >= 3:
-                notification = await cls.generate_water_reminder(
+        now = datetime.utcnow()
+        date_key = now.strftime("%Y-%m-%d")
+
+        async def gather_actionable_plants() -> dict:
+            """
+            Action bucket hook for future signals (soil, etc.) without changing notification UX.
+
+            Returns:
+              - water_reminder_plants: list[dict] (schedule-based due/overdue)
+              - unknown_history_plants: list[dict] (need "check soil" baseline)
+              - soil_action_plants: list[dict] (placeholder for future soil hint integration)
+            """
+            buckets = {"water_reminder_plants": [], "unknown_history_plants": [], "soil_action_plants": []}
+
+            cursor = plants_collection.find({"user_id": user_id, "reminders_enabled": {"$ne": False}})
+            async for plant in cursor:
+                last_watered = plant.get("last_watered")
+                last_source = (plant.get("last_watered_source") or "").strip() or None
+                unknown_history = last_watered is None and (last_source in (None, "unknown"))
+
+                if unknown_history:
+                    buckets["unknown_history_plants"].append(plant)
+                    continue
+
+                rec = compute_watering_recommendation(plant, now=now)
+                if rec.urgency in {"due_today", "overdue"}:
+                    # Attach rec so we don't recompute.
+                    plant["_water_rec"] = rec
+                    buckets["water_reminder_plants"].append(plant)
+
+            return buckets
+
+        buckets = await gather_actionable_plants()
+
+        # A) Schedule-based per-plant reminders (due_today/overdue), once per plant per day.
+        for plant in buckets["water_reminder_plants"]:
+            plant_id = str(plant["_id"])
+            plant_name = plant.get("nickname") or plant.get("common_name") or "Your plant"
+            rec = plant.get("_water_rec") or compute_watering_recommendation(plant, now=now)
+
+            dedupe_key = f"water_reminder:{user_id}:{plant_id}:{date_key}"
+            notification = await cls.create_notification_deduped(
+                NotificationCreate(
                     user_id=user_id,
-                    plant_id=str(plant["_id"]),
-                    plant_name=plant.get("common_name", "Your plant"),
-                    days_since_watered=days_since
+                    notification_type=NotificationType.WATER_REMINDER,
+                    priority=NotificationPriority.HIGH if rec.urgency == "overdue" else NotificationPriority.MEDIUM,
+                    title="Time to water",
+                    message=f"{plant_name}: {rec.recommended_action}. Remember to mark it as watered.",
+                    plant_id=plant_id,
+                    action_url=f"/plants/{plant_id}",
+                    dedupe_key=dedupe_key,
+                    metadata={
+                        "plant_id": plant_id,
+                        "urgency": rec.urgency,
+                        "next_water_date": rec.next_water_date.isoformat() if rec.next_water_date else None,
+                        "days_until_due": rec.days_until_due,
+                    },
                 )
-                if notification:
-                    notifications.append(notification)
+            )
+            if notification:
+                notifications.append(notification)
+
+        # B) Unknown last-watered reminders: one daily summary per user (no per-plant spam).
+        unknown_plants = buckets["unknown_history_plants"]
+        unknown_count = len(unknown_plants)
+        if unknown_count > 0:
+            plant_ids = [str(p["_id"]) for p in unknown_plants]
+            sample_names = [
+                (p.get("nickname") or p.get("common_name") or "Plant").strip()
+                for p in unknown_plants[:3]
+            ]
+            title = "Check soil for your plants"
+            if unknown_count == 1:
+                body = "Check soil for 1 plant today. Water only if dry — and remember to mark it as watered."
+            else:
+                body = f"Check soil for {unknown_count} plants today. Water only if dry — and remember to mark them as watered."
+
+            dedupe_key = f"water_check_summary:{user_id}:{date_key}"
+            primary_plant_id = plant_ids[0] if plant_ids else None
+            notification = await cls.create_notification_deduped(
+                NotificationCreate(
+                    user_id=user_id,
+                    notification_type=NotificationType.WATER_CHECK_SUMMARY,
+                    priority=NotificationPriority.MEDIUM,
+                    title=title,
+                    message=body,
+                    # Optional compatibility: set a primary plant id for older clients that expect one.
+                    plant_id=primary_plant_id,
+                    action_url="/garden",
+                    dedupe_key=dedupe_key,
+                    metadata={
+                        "count": unknown_count,
+                        "plant_ids": plant_ids,
+                        "sample_names": sample_names[:3],
+                        "primary_plant_id": primary_plant_id,
+                        "action_bucket": "unknown_history",
+                    },
+                )
+            )
+            if notification:
+                notifications.append(notification)
         
         return notifications
     
@@ -414,6 +519,7 @@ class NotificationService:
             priority=doc["priority"],
             title=doc["title"],
             message=doc["message"],
+            metadata=doc.get("metadata") or {},
             icon_url=public_asset_url(icon_path),
             plant_id=doc.get("plant_id"),
             action_url=doc.get("action_url"),

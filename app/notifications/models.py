@@ -1,7 +1,7 @@
 """Notification models and schemas."""
 
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 from enum import Enum
 
@@ -10,6 +10,8 @@ class NotificationType(str, Enum):
     """Types of notifications."""
     HEALTH_ALERT = "health_alert"
     WATER_REMINDER = "water_reminder"
+    WATER_CHECK = "water_check"
+    WATER_CHECK_SUMMARY = "water_check_summary"
     ACTION_REQUIRED = "action_required"
     WEATHER_ALERT = "weather_alert"
 
@@ -30,6 +32,14 @@ class NotificationCreate(BaseModel):
     message: str
     plant_id: Optional[str] = None  # Reference to user's plant (MongoDB ObjectId)
     action_url: Optional[str] = None  # Deep link to relevant page
+    dedupe_key: Optional[str] = Field(
+        default=None,
+        description="Optional idempotency key to prevent duplicate notifications (server-side).",
+    )
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Optional structured payload for in-app rendering (kept small).",
+    )
 
 
 class NotificationResponse(BaseModel):
@@ -40,6 +50,7 @@ class NotificationResponse(BaseModel):
     priority: str
     title: str
     message: str
+    metadata: Dict[str, Any] = Field(default_factory=dict)
     icon_url: Optional[str] = Field(
         default=None,
         description="Public URL for notification icon (expanded using S3_BASE_URL).",

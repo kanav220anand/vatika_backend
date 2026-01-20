@@ -64,6 +64,10 @@ async def analyze_plant(
 
     city = await AuthService.get_user_city(current_user["id"])
 
+    # Validate that at least one image source is provided
+    if not request.image_base64 and not request.image_url:
+        raise BadRequestException("Either image_base64 or image_url must be provided")
+    
     validate_base64_payload(request.image_base64, max_chars=int(settings.AI_MAX_BASE64_CHARS), field_name="image_base64")
     image_key = None
     if request.image_url:
@@ -498,6 +502,10 @@ async def get_health_timeline(
                         if s.get("thumbnail_key") and not str(s.get("thumbnail_key")).startswith("http")
                         else s.get("thumbnail_key")
                     ),
+                    snapshot_type=s.get("snapshot_type"),
+                    analysis=s.get("analysis"),
+                    soil=s.get("soil"),
+                    soil_hint=s.get("soil_hint"),
                     created_at=s["created_at"]
                 )
                 for s in snapshots
@@ -552,6 +560,10 @@ async def create_health_snapshot(
             immediate_actions=snapshot.get("immediate_actions", []),
             image_url=s3.generate_presigned_get_url(image_key, expiration=3600) if image_key else None,
             thumbnail_url=s3.generate_presigned_get_url(thumb_key, expiration=3600) if thumb_key else None,
+            snapshot_type=snapshot.get("snapshot_type"),
+            analysis=snapshot.get("analysis"),
+            soil=snapshot.get("soil"),
+            soil_hint=snapshot.get("soil_hint"),
             created_at=snapshot["created_at"],
         )
     except AppException as e:

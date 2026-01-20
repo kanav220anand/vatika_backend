@@ -66,6 +66,15 @@ class Database:
 
         # Health snapshots collection (timeline)
         await cls.db.health_snapshots.create_index([("user_id", 1), ("plant_id", 1), ("created_at", -1)])
+        # ANALYSIS-002: one initial snapshot per plant (code guard exists; this index enforces it when supported).
+        try:
+            await cls.db.health_snapshots.create_index(
+                [("plant_id", 1), ("snapshot_type", 1)],
+                unique=True,
+                partialFilterExpression={"snapshot_type": "initial"},
+            )
+        except Exception:
+            pass
 
         # Events collection (history/timeline)
         await cls.db.events.create_index([("user_id", 1), ("plant_id", 1), ("created_at", -1)])
@@ -84,6 +93,52 @@ class Database:
         # Notifications collection (supports cheap unread-count + list ordering)
         await cls.db.notifications.create_index([("user_id", 1), ("is_read", 1), ("created_at", -1)])
         await cls.db.notifications.create_index([("user_id", 1), ("created_at", -1)])
+        # Backfill cleanup: if any old docs accidentally stored dedupe_key: null, remove it so sparse unique index works.
+        # First, try to drop the existing index if it exists (in case it has issues)
+        try:
+            await cls.db.notifications.drop_index("user_id_1_dedupe_key_1")
+        except Exception:
+            pass  # Index doesn't exist or already dropped
+        
+        # Clean up duplicate notifications with null dedupe_key BEFORE creating index
+        try:
+            # Find all documents with null dedupe_key, group by user_id, keep only the oldest one per user
+            pipeline = [
+                {"$match": {"dedupe_key": None}},
+                {"$sort": {"created_at": 1}},
+                {"$group": {
+                    "_id": "$user_id",
+                    "ids": {"$push": "$_id"},
+                    "count": {"$sum": 1}
+                }},
+                {"$match": {"count": {"$gt": 1}}}
+            ]
+            duplicates_found = False
+            async for dup in cls.db.notifications.aggregate(pipeline):
+                duplicates_found = True
+                # Keep the first (oldest) document, delete the rest
+                ids_to_delete = dup["ids"][1:]
+                if ids_to_delete:
+                    result = await cls.db.notifications.delete_many({"_id": {"$in": ids_to_delete}})
+                    print(f"Cleaned up {result.deleted_count} duplicate notifications for user {dup['_id']}")
+            
+            # Remove dedupe_key field from all documents that have null or empty string
+            result = await cls.db.notifications.update_many(
+                {"dedupe_key": {"$in": [None, ""]}}, 
+                {"$unset": {"dedupe_key": ""}}
+            )
+            if result.modified_count > 0:
+                print(f"Removed dedupe_key field from {result.modified_count} notifications")
+        except Exception as e:
+            print(f"Warning: Could not clean up dedupe_key fields: {e}")
+        
+        # Watering reminders/checks: idempotency per user per plant per day.
+        # Sparse to avoid old docs (without dedupe_key) colliding under a unique index.
+        try:
+            await cls.db.notifications.create_index([("user_id", 1), ("dedupe_key", 1)], unique=True, sparse=True)
+        except Exception as e:
+            print(f"Warning: Could not create notifications dedupe index: {e}")
+            # Continue anyway - the app can work without this index, but deduplication won't work
 
         # AI usage / rate limits (COST-001)
         await cls.db.rate_limits.create_index([("expires_at", 1)], expireAfterSeconds=0)
