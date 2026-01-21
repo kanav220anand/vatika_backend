@@ -85,7 +85,7 @@ JWT_SECRET_KEY=generate-a-secure-random-key
 ### 2. Start with Docker
 
 ```bash
-# Start API + MongoDB
+# Start API (connects to the Mongo configured in `vatika_backend/.env`)
 docker-compose up --build
 
 # Or run in background
@@ -96,17 +96,8 @@ The API will be available at: **http://localhost:8000**
 
 ### 3. View API Documentation
 
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
-
-### Optional: MongoDB Admin UI
-
-```bash
-# Start with Mongo Express UI
-docker-compose --profile tools up
-```
-
-Access Mongo Express at: http://localhost:8081
+- Swagger UI: http://localhost:8000/api/v1/vatisha/docs
+- ReDoc: http://localhost:8000/api/v1/vatisha/redoc
 
 ## Local Development (Without Docker)
 
@@ -126,10 +117,8 @@ pip install -r requirements.txt
 Make sure MongoDB is running locally on port 27017.
 
 ```bash
-# Using Docker for just MongoDB
-docker run -d -p 27017:27017 --name plantsitter-mongo mongo:7
-
-# Or install MongoDB locally
+# Install MongoDB locally or run it via Docker (any method is fine).
+# If you run MongoDB in Docker, ensure your `.env` points at it correctly.
 ```
 
 ### 3. Run the Server

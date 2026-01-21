@@ -137,11 +137,11 @@ lsof -ti:8000 | xargs kill -9
 ### MongoDB connection errors
 
 ```bash
-# Check if MongoDB container is running
-docker ps | grep mongo
-
-# Check MongoDB logs
-docker logs plantsitter-mongo
+# Ensure your MongoDB is reachable and the connection string in `vatika_backend/.env`
+# is correct (MONGODB_URI or MONGO_URI + MONGO_DB_NAME).
+#
+# If MongoDB is running on your host machine and the API is running in Docker,
+# use `host.docker.internal` instead of `localhost` in MONGO_URI.
 ```
 
 ### API not starting

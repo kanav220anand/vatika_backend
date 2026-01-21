@@ -786,7 +786,15 @@ class PlantService:
                 threshold = float(getattr(get_settings(), "SOIL_CONFIDENCE_THRESHOLD", 0.6))
                 soil_doc = snapshot["soil"]
                 if bool(soil_doc.get("visible")) and float(soil_doc.get("confidence") or 0.0) >= threshold:
-                    dryness = str(soil_doc.get("dryness") or "unknown")
+                    # Properly extract enum value (handle both enum objects and string representations)
+                    dryness_raw = soil_doc.get("dryness") or "unknown"
+                    if hasattr(dryness_raw, "value"):
+                        dryness = dryness_raw.value
+                    elif isinstance(dryness_raw, str) and "." in dryness_raw:
+                        # Handle "SoilDryness.DRY" -> "dry"
+                        dryness = dryness_raw.split(".")[-1].lower()
+                    else:
+                        dryness = str(dryness_raw)
                     soil_state_doc = {
                         "visible": True,
                         "confidence": float(soil_doc.get("confidence") or 0.0),
@@ -1097,7 +1105,24 @@ class PlantService:
             last_event_at=doc.get("last_event_at"),
             toxicity=doc.get("toxicity"),
             placement=doc.get("placement"),
-            soil_state=doc.get("soil_state"),
+            soil_state=cls._normalize_soil_state(doc.get("soil_state")),
             initial_snapshot_id=doc.get("initial_snapshot_id"),
             last_analysis_at=doc.get("last_analysis_at"),
         )
+
+    @classmethod
+    def _normalize_soil_state(cls, soil_state: Optional[dict]) -> Optional[dict]:
+        """Normalize soil_state dict to ensure enum values are proper strings."""
+        if not soil_state or not isinstance(soil_state, dict):
+            return soil_state
+        
+        result = dict(soil_state)
+        dryness = result.get("dryness")
+        if dryness:
+            # Handle enum objects
+            if hasattr(dryness, "value"):
+                result["dryness"] = dryness.value
+            # Handle "SoilDryness.DRY" -> "dry"
+            elif isinstance(dryness, str) and "." in dryness:
+                result["dryness"] = dryness.split(".")[-1].lower()
+        return result
