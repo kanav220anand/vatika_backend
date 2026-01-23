@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     AWS_REGION: str = "ap-south-1"
     AWS_S3_BUCKET: str = ""
 
+    # AWS SNS (Push notifications)
+    AWS_SNS_PLATFORM_APPLICATION_ARN_IOS: str = ""
+    AWS_SNS_PLATFORM_APPLICATION_ARN_IOS_SANDBOX: str = ""
+    AWS_SNS_PLATFORM_APPLICATION_ARN_ANDROID: str = ""
+
     # Public assets base URL (e.g. https://vatika-assets-prod.s3.us-east-1.amazonaws.com/)
     S3_BASE_URL: str = ""
 
@@ -109,6 +114,9 @@ class Settings(BaseSettings):
         "AWS_SECRET_ACCESS_KEY",
         "AWS_REGION",
         "AWS_S3_BUCKET",
+        "AWS_SNS_PLATFORM_APPLICATION_ARN_IOS",
+        "AWS_SNS_PLATFORM_APPLICATION_ARN_IOS_SANDBOX",
+        "AWS_SNS_PLATFORM_APPLICATION_ARN_ANDROID",
         "S3_BASE_URL",
         "MONGODB_URI",
         "CELERY_BROKER_URL",

@@ -140,6 +140,19 @@ class Database:
             print(f"Warning: Could not create notifications dedupe index: {e}")
             # Continue anyway - the app can work without this index, but deduplication won't work
 
+        # Push notifications (SNS device registration + preferences + send queue)
+        await cls.db.push_devices.create_index("app_install_id", unique=True)
+        await cls.db.push_devices.create_index([("user_id", 1), ("status", 1)])
+        await cls.db.push_devices.create_index("token")
+
+        await cls.db.push_preferences.create_index("user_id", unique=True)
+
+        await cls.db.push_notifications.create_index([("status", 1), ("delivery_time", 1)])
+        await cls.db.push_notifications.create_index("user_id")
+
+        await cls.db.push_log.create_index([("user_id", 1), ("created_at", -1)])
+        await cls.db.push_log.create_index([("device_id", 1), ("created_at", -1)])
+
         # AI usage / rate limits (COST-001)
         await cls.db.rate_limits.create_index([("expires_at", 1)], expireAfterSeconds=0)
         await cls.db.rate_limits.create_index([("key", 1), ("window_start", 1)])

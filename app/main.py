@@ -15,6 +15,7 @@ from app.auth.views import router as auth_router
 from app.plants.views import router as plants_router
 from app.weather.views import router as weather_router
 from app.notifications.views import router as notifications_router
+from app.push.views import router as push_router
 from app.achievements.views import router as achievements_router
 from app.gamification.views import router as gamification_router
 from app.recommended_plants.views import router as recommended_plants_router
@@ -89,6 +90,7 @@ routers = [
     plants_router,
     weather_router,
     notifications_router,
+    push_router,
     achievements_router,
     gamification_router,
     recommended_plants_router,
