@@ -376,7 +376,10 @@ class AuthService:
         
         # If user doesn't exist, return success but don't send email
         if not user:
+            print(f"[DEBUG] User with email {email} not found in database")
             return success_message
+        
+        print(f"[DEBUG] User found: {user.get('email')}, name: {user.get('name')}, has password_hash: {bool(user.get('password_hash'))}")
         
         # Check if user is OAuth user (no password to reset)
         if not user.get("password_hash"):
@@ -417,16 +420,25 @@ class AuthService:
         )
         
         # Send email with reset token
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        print(f"[DEBUG] Attempting to send password reset email to {email} for user {user.get('name', 'unknown')}")
+        logger.info(f"Attempting to send password reset email to {email} for user {user.get('name', 'unknown')}")
         email_sent = await EmailService.send_password_reset_email(
             to_email=email,
             user_name=user.get("name", "there"),
             reset_token=reset_token  # Send plain token in email
         )
         
+        print(f"[DEBUG] Email sending result: {email_sent}")
         if not email_sent:
             # Log error but still return success (don't reveal internal errors)
-            import logging
-            logging.error(f"Failed to send password reset email to {email}")
+            print(f"[DEBUG] Failed to send password reset email to {email}")
+            logger.error(f"Failed to send password reset email to {email}. Check AWS SES configuration and logs.")
+        else:
+            print(f"[DEBUG] Password reset email sent successfully to {email}")
+            logger.info(f"Password reset email sent successfully to {email}")
         
         return success_message
     
@@ -445,29 +457,31 @@ class AuthService:
         
         users = cls._get_collection()
         
-        # Hash the token to compare with stored hash
-        token_hash = cls.hash_password(token)
-        
         # Find user with matching token
         # Note: We can't directly match the hash, so we need to check all users
         # with reset tokens and verify the hash. For better performance in production,
         # consider a different token storage strategy or indexing.
         
-        # For now, find users with active reset tokens
+        # Find users with active reset tokens
         potential_users = await users.find({
             "reset_token_hash": {"$exists": True, "$ne": None},
             "reset_token_expires": {"$gt": datetime.utcnow()}
         }).to_list(length=100)
         
+        print(f"[DEBUG] Found {len(potential_users)} users with active reset tokens")
+        
         # Verify token hash
         for user in potential_users:
-            if cls.verify_password(token, user.get("reset_token_hash", "")):
+            stored_hash = user.get("reset_token_hash", "")
+            if stored_hash and cls.verify_password(token, stored_hash):
+                print(f"[DEBUG] Token verified for user: {user.get('email')}")
                 return {
                     "valid": True,
                     "email": user["email"]
                 }
         
         # Token invalid or expired
+        print(f"[DEBUG] Token verification failed - no matching user found")
         return {
             "valid": False,
             "error": "Invalid or expired reset token"

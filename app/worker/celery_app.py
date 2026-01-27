@@ -9,7 +9,7 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
-QUEUE_PREFIX = (settings.CELERY_QUEUE_PREFIX or "vatika-").strip()
+QUEUE_PREFIX = (settings.CELERY_QUEUE_PREFIX or "vatisha-").strip()
 # Celery SQS transport applies `queue_name_prefix` to queue names.
 # Use the logical queue name "default" so the actual SQS queue becomes "<prefix>default".
 DEFAULT_QUEUE = "default"

@@ -94,7 +94,7 @@ class Settings(BaseSettings):
     # AWS SES Email (Password Reset)
     # ------------------------------------------------------------------
     AWS_SES_REGION: str = "ap-south-1"  # Use same as AWS_REGION
-    EMAIL_FROM_ADDRESS: str = "support@vatisha.app"
+    EMAIL_FROM_ADDRESS: str = "no-reply@vatisha.com"
     EMAIL_FROM_NAME: str = "Vatisha"
 
     # Password Reset Configuration
@@ -103,7 +103,7 @@ class Settings(BaseSettings):
     PASSWORD_MIN_LENGTH: int = 6
     
     # Web reset page base URL (for email links)
-    WEB_RESET_PASSWORD_URL: str = "https://api.vatisha.app/static/reset-password.html"
+    WEB_RESET_PASSWORD_URL: str = "https://api.vatisha.com/static/reset-password.html"
     # Can be overridden with S3 URL in production
 
     # ------------------------------------------------------------------
