@@ -322,3 +322,214 @@ class AuthService:
         users = cls._get_collection()
         user = await users.find_one({"_id": ObjectId(user_id)}, {"city": 1})
         return user.get("city") if user else None
+
+    # ==================== Password Reset ====================
+    
+    @classmethod
+    async def _check_reset_rate_limit(cls, user: dict) -> bool:
+        """
+        Check if user has exceeded password reset rate limit.
+        Returns True if within limit, False if exceeded.
+        """
+        from datetime import datetime, timedelta
+        from app.core.config import get_settings
+        
+        settings = get_settings()
+        reset_requests = user.get("reset_requests", [])
+        
+        # Filter requests from the last hour
+        one_hour_ago = datetime.utcnow() - timedelta(hours=1)
+        recent_requests = [
+            req for req in reset_requests
+            if isinstance(req, datetime) and req > one_hour_ago
+        ]
+        
+        return len(recent_requests) < settings.RESET_TOKEN_MAX_REQUESTS_PER_HOUR
+    
+    @classmethod
+    async def request_password_reset(cls, email: str) -> dict:
+        """
+        Request a password reset email.
+        Always returns success message (security: don't reveal if email exists).
+        
+        Args:
+            email: User's email address
+            
+        Returns:
+            Success message
+        """
+        import secrets
+        from datetime import datetime, timedelta
+        from app.core.config import get_settings
+        from app.core.email_service import EmailService
+        
+        settings = get_settings()
+        users = cls._get_collection()
+        
+        # Find user by email
+        user = await users.find_one({"email": email})
+        
+        # Always return success message (don't reveal if email exists)
+        success_message = {
+            "message": "If that email exists in our system, we sent a password reset link."
+        }
+        
+        # If user doesn't exist, return success but don't send email
+        if not user:
+            return success_message
+        
+        # Check if user is OAuth user (no password to reset)
+        if not user.get("password_hash"):
+            auth_provider = user.get("auth_provider", "unknown")
+            raise BadRequestException(
+                f"This account uses {auth_provider.title()} sign-in. "
+                "Please sign in with that method. Password reset is not available for OAuth accounts."
+            )
+        
+        # Check rate limit
+        if not await cls._check_reset_rate_limit(user):
+            from app.core.exceptions import TooManyRequestsException
+            raise TooManyRequestsException(
+                "Too many password reset requests. Please try again later."
+            )
+        
+        # Generate secure random token
+        reset_token = secrets.token_urlsafe(32)  # 32 bytes = 43 characters base64
+        
+        # Hash the token before storing
+        token_hash = cls.hash_password(reset_token)
+        
+        # Calculate expiration time
+        expires_at = datetime.utcnow() + timedelta(minutes=settings.RESET_TOKEN_EXPIRE_MINUTES)
+        
+        # Update user with token and add to reset_requests list
+        await users.update_one(
+            {"_id": user["_id"]},
+            {
+                "$set": {
+                    "reset_token_hash": token_hash,
+                    "reset_token_expires": expires_at,
+                },
+                "$push": {
+                    "reset_requests": datetime.utcnow()
+                }
+            }
+        )
+        
+        # Send email with reset token
+        email_sent = await EmailService.send_password_reset_email(
+            to_email=email,
+            user_name=user.get("name", "there"),
+            reset_token=reset_token  # Send plain token in email
+        )
+        
+        if not email_sent:
+            # Log error but still return success (don't reveal internal errors)
+            import logging
+            logging.error(f"Failed to send password reset email to {email}")
+        
+        return success_message
+    
+    @classmethod
+    async def verify_reset_token(cls, token: str) -> dict:
+        """
+        Verify if a reset token is valid and not expired.
+        
+        Args:
+            token: Password reset token from email
+            
+        Returns:
+            Validation result with email if valid, error if invalid
+        """
+        from datetime import datetime
+        
+        users = cls._get_collection()
+        
+        # Hash the token to compare with stored hash
+        token_hash = cls.hash_password(token)
+        
+        # Find user with matching token
+        # Note: We can't directly match the hash, so we need to check all users
+        # with reset tokens and verify the hash. For better performance in production,
+        # consider a different token storage strategy or indexing.
+        
+        # For now, find users with active reset tokens
+        potential_users = await users.find({
+            "reset_token_hash": {"$exists": True, "$ne": None},
+            "reset_token_expires": {"$gt": datetime.utcnow()}
+        }).to_list(length=100)
+        
+        # Verify token hash
+        for user in potential_users:
+            if cls.verify_password(token, user.get("reset_token_hash", "")):
+                return {
+                    "valid": True,
+                    "email": user["email"]
+                }
+        
+        # Token invalid or expired
+        return {
+            "valid": False,
+            "error": "Invalid or expired reset token"
+        }
+    
+    @classmethod
+    async def reset_password(cls, token: str, new_password: str) -> dict:
+        """
+        Reset user password using valid token.
+        
+        Args:
+            token: Password reset token from email
+            new_password: New password to set
+            
+        Returns:
+            Success message
+        """
+        from datetime import datetime
+        from app.core.config import get_settings
+        
+        settings = get_settings()
+        users = cls._get_collection()
+        
+        # Validate password length
+        if len(new_password) < settings.PASSWORD_MIN_LENGTH:
+            raise BadRequestException(
+                f"Password must be at least {settings.PASSWORD_MIN_LENGTH} characters long"
+            )
+        
+        # Find user with valid token (same logic as verify_reset_token)
+        potential_users = await users.find({
+            "reset_token_hash": {"$exists": True, "$ne": None},
+            "reset_token_expires": {"$gt": datetime.utcnow()}
+        }).to_list(length=100)
+        
+        user = None
+        for potential_user in potential_users:
+            if cls.verify_password(token, potential_user.get("reset_token_hash", "")):
+                user = potential_user
+                break
+        
+        if not user:
+            raise BadRequestException("Invalid or expired reset token")
+        
+        # Hash new password
+        new_password_hash = cls.hash_password(new_password)
+        
+        # Update password and clear reset token
+        await users.update_one(
+            {"_id": user["_id"]},
+            {
+                "$set": {
+                    "password_hash": new_password_hash,
+                },
+                "$unset": {
+                    "reset_token_hash": "",
+                    "reset_token_expires": ""
+                }
+            }
+        )
+        
+        return {
+            "message": "Password successfully reset. You can now log in with your new password."
+        }
+

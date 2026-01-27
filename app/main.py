@@ -7,6 +7,7 @@ Urban Gardening Assistant for Indian Balconies.
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.core.config import get_settings
 from app.core.database import Database
@@ -106,6 +107,10 @@ for router in routers:
     app.include_router(router, prefix=API_PREFIX)
     # Backward compatibility for existing clients (hidden from OpenAPI schema).
     app.include_router(router, prefix=LEGACY_API_PREFIX, include_in_schema=False)
+
+# Mount static files for password reset web pages
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
 
 
 @app.get("/", tags=["Health"])

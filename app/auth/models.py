@@ -84,3 +84,27 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     user: UserResponse
     is_new_user: bool = False  # True if user just signed up
+
+
+class ForgotPasswordRequest(BaseModel):
+    """Schema for requesting password reset."""
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    """Schema for resetting password with token."""
+    token: str = Field(..., min_length=32, description="Password reset token from email")
+    new_password: str = Field(..., min_length=6, description="New password (min 6 characters)")
+
+
+class VerifyResetTokenResponse(BaseModel):
+    """Schema for token verification response."""
+    valid: bool
+    email: Optional[str] = None  # Only returned if token is valid
+    error: Optional[str] = None  # Only returned if token is invalid
+
+
+class MessageResponse(BaseModel):
+    """Generic message response."""
+    message: str
+

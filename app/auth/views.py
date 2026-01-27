@@ -9,7 +9,9 @@ from app.auth.models import (
     UserResponse, 
     UserUpdate, 
     TokenResponse,
-    GoogleAuthRequest
+    GoogleAuthRequest,
+    ForgotPasswordRequest,
+    ResetPasswordRequest,
 )
 from app.auth.service import AuthService
 
@@ -68,3 +70,48 @@ async def update_profile(
     Updatable fields: name, city, balcony_orientation
     """
     return await AuthService.update_user(current_user["id"], updates.model_dump(exclude_none=True))
+
+
+# ==================== Password Reset ====================
+
+@router.post("/forgot-password")
+async def forgot_password(request: ForgotPasswordRequest):
+    """
+    Request a password reset email.
+    
+    Returns success message regardless of whether email exists (security measure).
+    Email will contain a link to reset password (valid for 1 hour).
+    
+    Rate limited to 3 requests per email per hour.
+    """
+    from app.auth.models import MessageResponse
+    result = await AuthService.request_password_reset(request.email)
+    return MessageResponse(**result)
+
+
+@router.get("/verify-reset-token")
+async def verify_reset_token(token: str):
+    """
+    Verify if a password reset token is valid and not expired.
+    
+    Used by frontend to validate token before showing reset form.
+    Returns user's email if valid, error message if invalid/expired.
+    """
+    from app.auth.models import VerifyResetTokenResponse
+    result = await AuthService.verify_reset_token(token)
+    return VerifyResetTokenResponse(**result)
+
+
+@router.post("/reset-password")
+async def reset_password(request: ResetPasswordRequest):
+    """
+    Reset password using a valid token.
+    
+    Token is single-use and expires after 1 hour.
+    Password must be at least 6 characters long.
+    """
+    from app.auth.models import MessageResponse
+    result = await AuthService.reset_password(request.token, request.new_password)
+    return MessageResponse(**result)
+
+

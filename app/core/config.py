@@ -91,6 +91,22 @@ class Settings(BaseSettings):
     CARE_CLUB_HELPFUL_VOTES_PER_24H: int = 30
 
     # ------------------------------------------------------------------
+    # AWS SES Email (Password Reset)
+    # ------------------------------------------------------------------
+    AWS_SES_REGION: str = "ap-south-1"  # Use same as AWS_REGION
+    EMAIL_FROM_ADDRESS: str = "support@vatisha.app"
+    EMAIL_FROM_NAME: str = "Vatisha"
+
+    # Password Reset Configuration
+    RESET_TOKEN_EXPIRE_MINUTES: int = 60  # 1 hour
+    RESET_TOKEN_MAX_REQUESTS_PER_HOUR: int = 3
+    PASSWORD_MIN_LENGTH: int = 6
+    
+    # Web reset page base URL (for email links)
+    WEB_RESET_PASSWORD_URL: str = "https://api.vatisha.app/static/reset-password.html"
+    # Can be overridden with S3 URL in production
+
+    # ------------------------------------------------------------------
     # INFRA-001 / JOBS-001: Celery (SQS broker) + Mongo jobs store
     # ------------------------------------------------------------------
     CELERY_BROKER_URL: str = "sqs://"
