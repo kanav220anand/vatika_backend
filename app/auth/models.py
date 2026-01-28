@@ -51,7 +51,8 @@ class UserResponse(BaseModel):
     city: Optional[str] = None
     balcony_orientation: Optional[str] = None
     auth_provider: str = "email"  # "email" | "google" | "apple"
-    profile_picture: Optional[str] = None
+    profile_picture: Optional[str] = None  # S3 key
+    profile_picture_url: Optional[str] = None  # Presigned URL for display
     notifications_enabled: bool = True
     profile_visibility: str = Field(default="public", pattern="^(public|private)$")
     onboarding_status: str = "never_shown"  # never_shown | shown | skipped | finished
@@ -70,6 +71,7 @@ class UserUpdate(BaseModel):
         None,
         pattern="^(north|south|east|west|north-east|north-west|south-east|south-west)$"
     )
+    profile_picture: Optional[str] = None  # S3 key or URL for avatar
     notifications_enabled: Optional[bool] = None
     profile_visibility: Optional[str] = Field(default=None, pattern="^(public|private)$")
     onboarding_status: Optional[str] = Field(
