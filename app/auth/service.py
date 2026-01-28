@@ -314,6 +314,7 @@ class AuthService:
             "name",
             "city",
             "balcony_orientation",
+            "profile_picture",
             "onboarding_status",
             "notifications_enabled",
             "profile_visibility",
