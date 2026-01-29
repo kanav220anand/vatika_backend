@@ -622,6 +622,10 @@ class EnrichmentService:
                 post["plant"] = plant
             else:
                 post["plant"] = plants.get(post["plant_id"])
+            
+            # Presign photo URLs (convert S3 keys to presigned URLs)
+            if post.get("photo_urls"):
+                post["photo_urls"] = [cls._maybe_presign_asset(url) for url in post["photo_urls"]]
 
         return posts
 
@@ -639,5 +643,9 @@ class EnrichmentService:
             comment["author"] = {k: v for (k, v) in (author or {}).items() if not str(k).startswith("_")} if author else None
             if author and author.get("_visibility") == "private":
                 comment["author_id"] = None
+            
+            # Presign photo URLs (convert S3 keys to presigned URLs)
+            if comment.get("photo_urls"):
+                comment["photo_urls"] = [cls._maybe_presign_asset(url) for url in comment["photo_urls"]]
 
         return comments
