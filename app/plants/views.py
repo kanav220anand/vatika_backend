@@ -678,7 +678,7 @@ async def create_journal_entry(
 ):
     """Add a new journal entry for a plant."""
     # Verify plant ownership
-    await PlantService.get_plant(plant_id, current_user["id"])
+    await PlantService.get_plant_by_id(plant_id, current_user["id"])
     
     return await JournalService.create_entry(
         plant_id=plant_id,
