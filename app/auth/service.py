@@ -254,10 +254,13 @@ class AuthService:
         
         result = await users.insert_one(user_doc)
         user_id = str(result.inserted_id)
-        
-        # Auto-unlock early_adopter achievement for new signups
-        await AchievementService.unlock_achievement(user_id, "early_adopter")
-        
+
+        # Auto-unlock early_adopter achievement for new signups (best-effort; don't fail registration)
+        try:
+            await AchievementService.unlock_achievement(user_id, "early_adopter")
+        except Exception:
+            pass
+
         # Generate token
         token = cls.create_access_token(user_id, user_data.email)
 

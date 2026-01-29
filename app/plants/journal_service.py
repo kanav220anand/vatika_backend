@@ -7,7 +7,7 @@ from bson import ObjectId
 from app.core.database import Database
 from app.core.exceptions import NotFoundException, BadRequestException
 from app.plants.models import JournalEntryCreate, JournalEntryUpdate, JournalEntry
-from app.files.s3_service import S3Service
+from app.core.aws import S3Service
 
 
 class JournalService:
@@ -186,7 +186,7 @@ class JournalService:
         if doc.get("image_key"):
             try:
                 s3 = S3Service()
-                s3.delete_file(doc["image_key"])
+                s3.delete_object(doc["image_key"])
             except Exception:
                 pass  # Best effort cleanup
 
