@@ -396,5 +396,7 @@ class HealthTimelineResponse(BaseModel):
 
 
 class HealthSnapshotCreateRequest(BaseModel):
-    """Create a new health snapshot from an uploaded image key."""
-    image_key: str = Field(..., description="S3 key for the uploaded image")
+    """Create a new health snapshot from an uploaded image or base64 data."""
+    image_key: Optional[str] = Field(None, description="S3 key for the uploaded image (used for storage)")
+    image_base64: Optional[str] = Field(None, description="Base64 encoded image for analysis (skip S3 download)")
+    thumbnail_base64: Optional[str] = Field(None, description="Base64 encoded thumbnail (skip thumbnail generation)")

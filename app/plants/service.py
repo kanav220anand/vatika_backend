@@ -873,13 +873,19 @@ class PlantService:
         cls,
         plant_id: str,
         user_id: str,
-        image_key: str,
+        image_key: Optional[str] = None,
         city: Optional[str] = None,
+        image_base64: Optional[str] = None,
+        thumbnail_base64: Optional[str] = None,
     ) -> dict:
         """
-        Create a new health snapshot (weekly-gated) from an uploaded image key.
-        Also generates and uploads a thumbnail, and updates the plant's latest health fields.
+        Create a new health snapshot (weekly-gated) from an uploaded image key or base64 data.
+        If image_base64 is provided, skips S3 download for faster processing.
+        If thumbnail_base64 is provided, skips thumbnail generation.
+        Runs thumbnail upload and OpenAI analysis in parallel for speed.
         """
+        import asyncio
+
         object_id = cls._validate_object_id(plant_id)
         plants_collection = cls._get_plants_collection()
         plant = await plants_collection.find_one({"_id": object_id, "user_id": user_id})
@@ -894,33 +900,62 @@ class PlantService:
         if min_days > 0 and next_allowed_at and datetime.utcnow() < next_allowed_at:
             raise BadRequestException("Snapshot already added recently. Please try again later.")
 
-        if not image_key or not isinstance(image_key, str) or not image_key.strip():
-            raise BadRequestException("image_key is required")
+        # Validate: need either image_key or image_base64
+        if not image_base64 and (not image_key or not isinstance(image_key, str) or not image_key.strip()):
+            raise BadRequestException("Either image_key or image_base64 is required")
 
         s3 = S3Service()
-        try:
-            base64_full = s3.download_file_as_base64(image_key)
-        except Exception as e:
-            raise BadRequestException(f"Failed to download uploaded image: {e}")
 
-        # Generate thumbnail for UI
-        thumb_base64 = ImageService.create_thumbnail(base64_full, max_size=(384, 384))
+        # If base64 provided by client, use it directly (skip S3 download)
+        if image_base64:
+            # Client already prepared the analysis image
+            analysis_base64 = image_base64
+            # Use provided thumbnail or generate from analysis image
+            if thumbnail_base64:
+                thumb_base64 = thumbnail_base64
+            else:
+                thumb_base64 = ImageService.create_thumbnail(analysis_base64, max_size=(384, 384))
+        else:
+            # Legacy flow: download from S3
+            try:
+                base64_full = s3.download_file_as_base64(image_key)
+            except Exception as e:
+                raise BadRequestException(f"Failed to download uploaded image: {e}")
 
-        # Use a larger but bounded image for analysis to reduce token/cost
-        analysis_base64 = ImageService.create_thumbnail(base64_full, max_size=(1024, 1024))
+            # Generate thumbnail for UI
+            thumb_base64 = ImageService.create_thumbnail(base64_full, max_size=(384, 384))
 
-        # Upload thumbnail to S3
+            # Use a larger but bounded image for analysis to reduce token/cost
+            analysis_base64 = ImageService.create_thumbnail(base64_full, max_size=(1024, 1024))
+
+        # Prepare thumbnail key
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         thumb_key = f"plants/{user_id}/{plant_id}/thumbs/{timestamp}_{ObjectId()}_thumb.jpg"
-        s3.upload_bytes(thumb_key, base64.b64decode(thumb_base64), content_type="image/jpeg")
 
-        # Analyze health (no user-facing analyze action; runs on weekly snapshot)
+        # Run thumbnail upload and OpenAI analysis in parallel for speed
         from app.plants.openai_service import OpenAIService
 
         openai_service = OpenAIService()
-        analysis = await openai_service.analyze_plant_thumbnail(
-            thumbnail_base64=analysis_base64,
-            city=city,
+
+        async def upload_thumbnail():
+            """Upload thumbnail to S3 (run in executor since it's sync)."""
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: s3.upload_bytes(thumb_key, base64.b64decode(thumb_base64), content_type="image/jpeg")
+            )
+
+        async def analyze_health():
+            """Run OpenAI health analysis."""
+            return await openai_service.analyze_plant_thumbnail(
+                thumbnail_base64=analysis_base64,
+                city=city,
+            )
+
+        # Run both operations in parallel
+        _, analysis = await asyncio.gather(
+            upload_thumbnail(),
+            analyze_health(),
         )
 
         health = analysis.health

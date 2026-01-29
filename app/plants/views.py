@@ -527,7 +527,14 @@ async def create_health_snapshot(
     http_request: Request,
     current_user: dict = Depends(get_current_user),
 ):
-    """Add a weekly health snapshot photo for a plant (analyzed automatically)."""
+    """Add a weekly health snapshot photo for a plant (analyzed automatically).
+    
+    Accepts either:
+    - image_key: S3 key of an already-uploaded image (legacy flow)
+    - image_base64 + thumbnail_base64: Base64 encoded images (faster flow, skips S3 round-trip)
+    
+    If base64 images are provided, the backend skips downloading from S3, saving ~2-4 seconds.
+    """
     try:
         await enforce_ai_limits(
             request=http_request,
@@ -538,13 +545,19 @@ async def create_health_snapshot(
             daily_snapshots=int(settings.AI_DAILY_SNAPSHOTS),
         )
 
-        image_key = validate_user_owned_s3_key(current_user["id"], request.image_key)
+        # Validate image_key if provided
+        image_key = None
+        if request.image_key:
+            image_key = validate_user_owned_s3_key(current_user["id"], request.image_key)
+        
         city = await AuthService.get_user_city(current_user["id"])
         snapshot = await PlantService.create_weekly_health_snapshot(
             plant_id=plant_id,
             user_id=current_user["id"],
             image_key=image_key,
             city=city,
+            image_base64=request.image_base64,
+            thumbnail_base64=request.thumbnail_base64,
         )
 
         s3 = S3Service()
