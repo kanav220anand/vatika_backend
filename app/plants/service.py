@@ -877,12 +877,14 @@ class PlantService:
         city: Optional[str] = None,
         image_base64: Optional[str] = None,
         thumbnail_base64: Optional[str] = None,
+        note: Optional[str] = None,
     ) -> dict:
         """
         Create a new health snapshot (weekly-gated) from an uploaded image key or base64 data.
         If image_base64 is provided, skips S3 download for faster processing.
         If thumbnail_base64 is provided, skips thumbnail generation.
         Runs thumbnail upload and OpenAI analysis in parallel for speed.
+        Optionally saves a note alongside the snapshot as a journal entry.
         """
         import asyncio
 
@@ -1035,6 +1037,23 @@ class PlantService:
             )
         except Exception:
             pass
+
+        # Create journal entry if note provided
+        if note and note.strip():
+            try:
+                from app.plants.journal_service import JournalService
+                from app.plants.models import JournalEntryCreate, JournalEntryType
+                await JournalService.create_entry(
+                    plant_id=plant_id,
+                    user_id=user_id,
+                    entry=JournalEntryCreate(
+                        entry_type=JournalEntryType.NOTE,
+                        content=note.strip(),
+                        image_key=image_key,
+                    ),
+                )
+            except Exception:
+                pass  # Best effort
 
         snapshot["next_allowed_at"] = await cls.get_next_allowed_snapshot_at(plant_id, user_id)
         snapshot["min_days_between_snapshots"] = min_days
