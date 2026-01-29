@@ -24,8 +24,13 @@ from app.plants.models import (
     HealthSnapshotCreateRequest,
     ImmediateFixUpdateRequest,
     PlantEventsResponse,
+    JournalEntryCreate,
+    JournalEntryUpdate,
+    JournalEntry,
+    JournalResponse,
 )
 from app.plants.service import PlantService
+from app.plants.journal_service import JournalService
 from app.plants.openai_service import OpenAIService
 from app.plants.video_service import VideoService, ImageService, VideoProcessingError
 from app.core.aws import S3Service
@@ -527,7 +532,14 @@ async def create_health_snapshot(
     http_request: Request,
     current_user: dict = Depends(get_current_user),
 ):
-    """Add a weekly health snapshot photo for a plant (analyzed automatically)."""
+    """Add a weekly health snapshot photo for a plant (analyzed automatically).
+    
+    Accepts either:
+    - image_key: S3 key of an already-uploaded image (legacy flow)
+    - image_base64 + thumbnail_base64: Base64 encoded images (faster flow, skips S3 round-trip)
+    
+    If base64 images are provided, the backend skips downloading from S3, saving ~2-4 seconds.
+    """
     try:
         await enforce_ai_limits(
             request=http_request,
@@ -538,13 +550,20 @@ async def create_health_snapshot(
             daily_snapshots=int(settings.AI_DAILY_SNAPSHOTS),
         )
 
-        image_key = validate_user_owned_s3_key(current_user["id"], request.image_key)
+        # Validate image_key if provided
+        image_key = None
+        if request.image_key:
+            image_key = validate_user_owned_s3_key(current_user["id"], request.image_key)
+        
         city = await AuthService.get_user_city(current_user["id"])
         snapshot = await PlantService.create_weekly_health_snapshot(
             plant_id=plant_id,
             user_id=current_user["id"],
             image_key=image_key,
             city=city,
+            image_base64=request.image_base64,
+            thumbnail_base64=request.thumbnail_base64,
+            note=request.note,
         )
 
         s3 = S3Service()
@@ -629,3 +648,65 @@ async def get_plant_events(
 
         e["metadata"] = meta
     return {"events": events}
+
+
+# ==================== Plant Journal Endpoints ====================
+
+
+@router.get("/{plant_id}/journal", response_model=JournalResponse)
+async def get_plant_journal(
+    plant_id: str,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=50),
+    current_user: dict = Depends(get_current_user),
+):
+    """Get journal entries for a plant (newest first)."""
+    entries, total_count, has_more = await JournalService.get_entries(
+        plant_id=plant_id,
+        user_id=current_user["id"],
+        skip=skip,
+        limit=limit,
+    )
+    return JournalResponse(entries=entries, total_count=total_count, has_more=has_more)
+
+
+@router.post("/{plant_id}/journal", response_model=JournalEntry, status_code=status.HTTP_201_CREATED)
+async def create_journal_entry(
+    plant_id: str,
+    entry: JournalEntryCreate,
+    current_user: dict = Depends(get_current_user),
+):
+    """Add a new journal entry for a plant."""
+    # Verify plant ownership
+    await PlantService.get_plant_by_id(plant_id, current_user["id"])
+    
+    return await JournalService.create_entry(
+        plant_id=plant_id,
+        user_id=current_user["id"],
+        entry=entry,
+    )
+
+
+@router.patch("/{plant_id}/journal/{entry_id}", response_model=JournalEntry)
+async def update_journal_entry(
+    plant_id: str,
+    entry_id: str,
+    update: JournalEntryUpdate,
+    current_user: dict = Depends(get_current_user),
+):
+    """Update a journal entry."""
+    return await JournalService.update_entry(
+        entry_id=entry_id,
+        user_id=current_user["id"],
+        update=update,
+    )
+
+
+@router.delete("/{plant_id}/journal/{entry_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_journal_entry(
+    plant_id: str,
+    entry_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Delete a journal entry."""
+    await JournalService.delete_entry(entry_id=entry_id, user_id=current_user["id"])

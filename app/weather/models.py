@@ -33,3 +33,27 @@ class WeatherAlertResponse(BaseModel):
     plant_tips: List[str] = Field(default_factory=list)
     fetched_at: datetime = Field(default_factory=datetime.utcnow)
 
+
+# ==================== Forecast Models ====================
+
+
+class ForecastBucket(BaseModel):
+    """A single 3-hour forecast bucket from OpenWeather."""
+    ts: datetime = Field(..., description="Timestamp for this forecast bucket (UTC)")
+    temp: float = Field(..., description="Temperature in Celsius")
+    feels_like: float = Field(..., description="Feels like temperature in Celsius")
+    humidity: int = Field(..., description="Humidity percentage")
+    description: str = Field(..., description="Weather description (e.g., 'clear sky')")
+    wind_speed: float = Field(..., description="Wind speed in m/s")
+    rain_3h: Optional[float] = Field(None, description="Rain volume in last 3 hours (mm)")
+
+
+class ForecastResponse(BaseModel):
+    """Response schema for weather forecast endpoint."""
+    city: str = Field(..., description="City display name")
+    city_key: str = Field(..., description="Normalized city key (lowercase)")
+    forecast: List[ForecastBucket] = Field(default_factory=list, description="Next 24h forecast (8 x 3h buckets)")
+    current_bucket_index: int = Field(0, description="Index of the bucket closest to current time (for frontend to highlight 'now')")
+    fetched_at: datetime = Field(default_factory=datetime.utcnow, description="When the forecast was fetched from OpenWeather")
+    from_cache: bool = Field(False, description="Whether this response was served from cache")
+

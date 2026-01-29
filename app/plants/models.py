@@ -396,5 +396,57 @@ class HealthTimelineResponse(BaseModel):
 
 
 class HealthSnapshotCreateRequest(BaseModel):
-    """Create a new health snapshot from an uploaded image key."""
-    image_key: str = Field(..., description="S3 key for the uploaded image")
+    """Create a new health snapshot from an uploaded image or base64 data."""
+    image_key: Optional[str] = Field(None, description="S3 key for the uploaded image (used for storage)")
+    image_base64: Optional[str] = Field(None, description="Base64 encoded image for analysis (skip S3 download)")
+    thumbnail_base64: Optional[str] = Field(None, description="Base64 encoded thumbnail (skip thumbnail generation)")
+    note: Optional[str] = Field(None, max_length=500, description="Optional note to add with this snapshot")
+
+
+# ==================== Plant Journal Models ====================
+
+
+class JournalEntryType(str, Enum):
+    """Types of journal entries."""
+    NOTE = "note"  # General note
+    REPOTTED = "repotted"
+    MOVED = "moved"
+    FERTILIZED = "fertilized"
+    PRUNED = "pruned"
+    PROPAGATED = "propagated"
+    NEW_GROWTH = "new_growth"
+    FLOWERING = "flowering"
+    PEST_SPOTTED = "pest_spotted"
+    OTHER = "other"
+
+
+class JournalEntryCreate(BaseModel):
+    """Create a new journal entry."""
+    entry_type: JournalEntryType = JournalEntryType.NOTE
+    content: str = Field(..., min_length=1, max_length=1000, description="Journal entry content")
+    image_key: Optional[str] = Field(None, description="Optional S3 key for an attached image")
+
+
+class JournalEntryUpdate(BaseModel):
+    """Update a journal entry."""
+    content: Optional[str] = Field(None, min_length=1, max_length=1000)
+    entry_type: Optional[JournalEntryType] = None
+
+
+class JournalEntry(BaseModel):
+    """A journal entry for a plant."""
+    id: str
+    plant_id: str
+    user_id: str
+    entry_type: str
+    content: str
+    image_url: Optional[str] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+
+class JournalResponse(BaseModel):
+    """Response containing journal entries."""
+    entries: List[JournalEntry]
+    total_count: int
+    has_more: bool = False

@@ -201,6 +201,10 @@ class Database:
         await cls.db.moderation_actions.create_index([("created_at", -1)])
         await cls.db.moderation_actions.create_index([("target_type", 1), ("target_id", 1), ("created_at", -1)])
 
+        # Weather forecast cache collection
+        await cls.db.weather_forecast_cache.create_index("city_key", unique=True)
+        await cls.db.weather_forecast_cache.create_index([("fetched_at", -1)])
+
     @classmethod
     async def _ensure_internal_master_docs(cls):
         """Seed/ensure internal master data documents exist."""

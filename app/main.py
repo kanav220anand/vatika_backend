@@ -26,6 +26,7 @@ from app.articles.views import router as articles_router
 from app.care_club.views import router as care_club_router
 from app.admin.moderation_views import router as admin_router
 from app.jobs.views import router as jobs_router
+from app.wishlist.views import router as wishlist_router
 
 settings = get_settings()
 API_PREFIX = "/api/v1/vatisha"
@@ -101,6 +102,7 @@ routers = [
     care_club_router,
     admin_router,
     jobs_router,
+    wishlist_router,
 ]
 
 for router in routers:

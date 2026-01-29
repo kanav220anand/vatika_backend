@@ -47,6 +47,17 @@ class AuthService:
         points = user.get("total_achievement_score", 0)
         user_level = await cls._get_user_level_summary(points)
 
+        # Generate presigned URL for profile picture if it exists
+        profile_picture_url = None
+        profile_picture_key = user.get("profile_picture")
+        if profile_picture_key and profile_picture_key.startswith("avatars/"):
+            try:
+                from app.core.aws import S3Service
+                s3 = S3Service()
+                profile_picture_url = s3.generate_presigned_get_url(profile_picture_key, expiration=86400 * 7)
+            except Exception:
+                pass  # Fail silently, URL will be None
+
         return UserResponse(
             id=str(user["_id"]),
             email=user["email"],
@@ -54,7 +65,8 @@ class AuthService:
             city=user.get("city"),
             balcony_orientation=user.get("balcony_orientation"),
             auth_provider=user.get("auth_provider", "email"),
-            profile_picture=user.get("profile_picture"),
+            profile_picture=profile_picture_key,
+            profile_picture_url=profile_picture_url,
             notifications_enabled=bool(user.get("notifications_enabled", True)),
             profile_visibility=user.get("profile_visibility", "public"),
             onboarding_status=user.get("onboarding_status", "never_shown"),
@@ -242,10 +254,13 @@ class AuthService:
         
         result = await users.insert_one(user_doc)
         user_id = str(result.inserted_id)
-        
-        # Auto-unlock early_adopter achievement for new signups
-        await AchievementService.unlock_achievement(user_id, "early_adopter")
-        
+
+        # Auto-unlock early_adopter achievement for new signups (best-effort; don't fail registration)
+        try:
+            await AchievementService.unlock_achievement(user_id, "early_adopter")
+        except Exception:
+            pass
+
         # Generate token
         token = cls.create_access_token(user_id, user_data.email)
 
@@ -302,6 +317,7 @@ class AuthService:
             "name",
             "city",
             "balcony_orientation",
+            "profile_picture",
             "onboarding_status",
             "notifications_enabled",
             "profile_visibility",
