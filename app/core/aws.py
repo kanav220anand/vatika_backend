@@ -26,7 +26,9 @@ class S3Service:
                     aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
                     aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
                     region_name=settings.AWS_REGION,
-                    config=boto3.session.Config(s3={'addressing_style': 'path'})
+                    # Use virtual hosted-style URLs (bucket.s3.region.amazonaws.com)
+                    # This is more reliable for React Native Image component
+                    config=boto3.session.Config(s3={'addressing_style': 'virtual'})
                 )
             except Exception as e:
                 logger.error(f"Failed to initialize S3 client: {e}")
