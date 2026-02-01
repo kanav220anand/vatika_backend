@@ -85,6 +85,10 @@ class Database:
         await cls.db.cities.create_index("state_lower")
         await cls.db.cities.create_index("rank")
 
+        # Today plans (daily dashboard)
+        await cls.db.today_plans.create_index([("user_id", 1), ("local_date", 1)], unique=True)
+        await cls.db.today_plans.create_index([("user_id", 1), ("updated_at", -1)])
+
         # Articles collection
         await cls.db.articles.create_index([("is_active", 1), ("scope", 1), ("priority", -1)])
         await cls.db.articles.create_index([("issue_tags", 1), ("is_active", 1)])

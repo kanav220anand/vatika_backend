@@ -1,8 +1,15 @@
-"""Plants API routes."""
+"""Plants API routes.
 
+Debug logging for image URLs:
+Run with DEBUG=true and check logs for IMAGE_URL_DEBUG entries.
+"""
+
+import logging
 import time
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Query, Request, status
+
+logger = logging.getLogger(__name__)
 
 from app.core.dependencies import get_current_user
 from app.core.config import get_settings
@@ -28,12 +35,15 @@ from app.plants.models import (
     JournalEntryUpdate,
     JournalEntry,
     JournalResponse,
+    TodayPlanResponse,
 )
 from app.plants.service import PlantService
+from app.plants.today_service import TodayPlanService
 from app.plants.journal_service import JournalService
 from app.plants.openai_service import OpenAIService
 from app.plants.video_service import VideoService, ImageService, VideoProcessingError
 from app.core.aws import S3Service
+from app.core.s3_keys import normalize_s3_key
 from app.plants.events_service import EventService
 from app.ai.rate_limit import enforce_ai_limits
 from app.ai.security import validate_user_owned_s3_key, validate_base64_payload
@@ -364,28 +374,42 @@ async def save_plant(
     current_user: dict = Depends(get_current_user)
 ):
     """Save a plant to your collection after analysis."""
-    return await PlantService.create_plant(current_user["id"], plant_data)
+    plant = await PlantService.create_plant(current_user["id"], plant_data)
+    return add_signed_url_to_plant(plant.dict() if hasattr(plant, "dict") else dict(plant))
 
 
 def add_signed_url_to_plant(plant_dict: dict) -> dict:
     """
-    Convert S3 key in image_url to a presigned URL.
-    Only processes if image_url looks like an S3 key (starts with 'plants/' or 'uploads/').
+    Convert user-uploaded S3 keys (or older stored S3 URLs) into a fresh presigned URL.
+
+    DEBUG: Logs what URL is being returned for each plant.
     """
     if not plant_dict.get("image_url"):
         return plant_dict
     
-    image_url = plant_dict["image_url"]
+    image_url = str(plant_dict["image_url"] or "").strip()
+    if not image_url:
+        return plant_dict
+
+    settings = get_settings()
+    key = normalize_s3_key(image_url, bucket=settings.AWS_S3_BUCKET, region=settings.AWS_REGION)
     
-    # Only generate presigned URL if it's an S3 key (not already a full URL)
-    if image_url.startswith("plants/") or image_url.startswith("uploads/"):
+    # Only presign our user-uploaded keys (plants/... or uploads/...).
+    if key and (key.startswith("plants/") or key.startswith("uploads/")):
         try:
             s3_service = S3Service()
             # Generate presigned URL valid for 1 hour
-            plant_dict["image_url"] = s3_service.generate_presigned_get_url(image_url, expiration=3600)
-        except Exception:
+            signed_url = s3_service.generate_presigned_get_url(key, expiration=3600)
+            plant_dict["image_url"] = signed_url
+            logger.info(f"[IMAGE_URL_DEBUG] Plant {plant_dict.get('id')}: Generated presigned URL")
+        except Exception as e:
             # If presigned URL fails, leave as is
+            logger.warning(
+                f"[IMAGE_URL_DEBUG] Plant {plant_dict.get('id')}: Failed to generate presigned URL for {key}. Error: {e}"
+            )
             pass
+    else:
+        logger.info(f"[IMAGE_URL_DEBUG] Plant {plant_dict.get('id')}: Using existing URL (not S3 key): {image_url[:80]}...")
     
     return plant_dict
 
@@ -407,6 +431,12 @@ async def get_plants_due_for_water(current_user: dict = Depends(get_current_user
     """Get plants that need watering today or are overdue."""
     plants = await PlantService.get_plants_needing_water(current_user["id"])
     return [add_signed_url_to_plant(p.dict() if hasattr(p, 'dict') else dict(p)) for p in plants]
+
+
+@router.get("/today", response_model=TodayPlanResponse)
+async def get_today_plan(current_user: dict = Depends(get_current_user)):
+    """Get (or generate) the user's Today plan for the current local day."""
+    return await TodayPlanService.get_today_plan(current_user["id"])
 
 
 @router.get("/search")
@@ -465,7 +495,8 @@ async def mark_watered(
     current_user: dict = Depends(get_current_user)
 ):
     """Mark a plant as watered (updates last_watered timestamp)."""
-    return await PlantService.mark_watered(plant_id, current_user["id"])
+    plant = await PlantService.mark_watered(plant_id, current_user["id"])
+    return add_signed_url_to_plant(plant.dict() if hasattr(plant, "dict") else dict(plant))
 
 
 @router.get("/{plant_id}/health-timeline", response_model=HealthTimelineResponse)
@@ -484,8 +515,9 @@ async def get_health_timeline(
         next_allowed_at = await PlantService.get_next_allowed_snapshot_at(plant_id, current_user["id"])
         min_days = PlantService._min_days_between_snapshots()
 
-        # Sign S3 keys for timeline images
+        # Sign S3 keys for timeline images (also handles older stored S3 URLs).
         s3 = S3Service()
+        settings = get_settings()
         
         return HealthTimelineResponse(
             plant_id=plant_id,
@@ -498,13 +530,35 @@ async def get_health_timeline(
                     issues=s.get("issues", []),
                     immediate_actions=s.get("immediate_actions", []),
                     image_url=(
-                        s3.generate_presigned_get_url((s.get("image_key") or s.get("image_url")), expiration=3600)
-                        if (s.get("image_key") or s.get("image_url")) and not str(s.get("image_key") or s.get("image_url")).startswith("http")
+                        s3.generate_presigned_get_url(
+                            normalize_s3_key(
+                                (s.get("image_key") or s.get("image_url")),
+                                bucket=settings.AWS_S3_BUCKET,
+                                region=settings.AWS_REGION,
+                            ),
+                            expiration=3600,
+                        )
+                        if normalize_s3_key(
+                            (s.get("image_key") or s.get("image_url")),
+                            bucket=settings.AWS_S3_BUCKET,
+                            region=settings.AWS_REGION,
+                        )
                         else (s.get("image_key") or s.get("image_url"))
                     ),
                     thumbnail_url=(
-                        s3.generate_presigned_get_url(s.get("thumbnail_key"), expiration=3600)
-                        if s.get("thumbnail_key") and not str(s.get("thumbnail_key")).startswith("http")
+                        s3.generate_presigned_get_url(
+                            normalize_s3_key(
+                                s.get("thumbnail_key"),
+                                bucket=settings.AWS_S3_BUCKET,
+                                region=settings.AWS_REGION,
+                            ),
+                            expiration=3600,
+                        )
+                        if normalize_s3_key(
+                            s.get("thumbnail_key"),
+                            bucket=settings.AWS_S3_BUCKET,
+                            region=settings.AWS_REGION,
+                        )
                         else s.get("thumbnail_key")
                     ),
                     snapshot_type=s.get("snapshot_type"),
@@ -626,8 +680,9 @@ async def get_plant_events(
 ):
     """Get recent plant events (water, photos, health checks)."""
     events = await EventService.get_user_events(user_id=current_user["id"], plant_id=plant_id, limit=limit)
-    # Add signed URLs for any image keys stored in event metadata
+    # Add signed URLs for any image keys stored in event metadata (handles older stored S3 URLs).
     s3 = S3Service()
+    settings = get_settings()
     for e in events:
         meta = e.get("metadata") or {}
         if not isinstance(meta, dict):
@@ -638,13 +693,14 @@ async def get_plant_events(
                 continue
             key = meta.get(key_field)
             if isinstance(key, str) and key:
-                if key.startswith("http://") or key.startswith("https://"):
-                    meta[url_field] = key
-                else:
+                normalized = normalize_s3_key(key, bucket=settings.AWS_S3_BUCKET, region=settings.AWS_REGION)
+                if normalized:
                     try:
-                        meta[url_field] = s3.generate_presigned_get_url(key, expiration=3600)
+                        meta[url_field] = s3.generate_presigned_get_url(normalized, expiration=3600)
                     except Exception:
                         pass
+                else:
+                    meta[url_field] = key
 
         e["metadata"] = meta
     return {"events": events}

@@ -220,6 +220,7 @@ class PlantCreate(BaseModel):
 
 class PlantUpdate(BaseModel):
     """Schema to update a plant."""
+    nickname: Optional[str] = None
     health_status: Optional[str] = None
     notes: Optional[str] = None
     image_url: Optional[str] = None
@@ -240,6 +241,17 @@ class ImmediateFixUpdateRequest(BaseModel):
     """Toggle completion of an immediate fix."""
 
     is_done: bool = Field(..., description="Mark fix as done/undone")
+
+
+class ProgressPrompt(BaseModel):
+    """Progress/check-in prompt for plant detail."""
+    title: str
+    subtitle: Optional[str] = None
+    icon: Optional[str] = None
+    cta_label: str
+    cta_action: str
+    cta_enabled: bool = True
+    next_allowed_at: Optional[datetime] = None
 
 
 class PlantResponse(BaseModel):
@@ -283,6 +295,7 @@ class PlantResponse(BaseModel):
     soil_state: Optional["SoilState"] = None
     initial_snapshot_id: Optional[str] = None
     last_analysis_at: Optional[datetime] = None
+    progress_prompt: Optional[ProgressPrompt] = None
 
 
 class PlantEventResponse(BaseModel):
@@ -450,3 +463,55 @@ class JournalResponse(BaseModel):
     entries: List[JournalEntry]
     total_count: int
     has_more: bool = False
+
+
+# ==================== Today Plan Models ====================
+
+
+class TodayAction(BaseModel):
+    """CTA action for Today hub."""
+    type: str
+    label: str
+    icon: Optional[str] = None
+    plant_id: Optional[str] = None
+    plant_name: Optional[str] = None
+    payload: Optional[Dict[str, Any]] = None
+
+
+class TodayTask(BaseModel):
+    """Task row in Today hub."""
+    id: str
+    type: str
+    plant_id: Optional[str] = None
+    plant_name: Optional[str] = None
+    status: Optional[str] = None  # overdue | due
+    primary_label: Optional[str] = None
+    secondary_label: Optional[str] = None
+    cta_label: Optional[str] = None
+    icon: Optional[str] = None
+    completed: bool = False
+    completed_at: Optional[datetime] = None
+    action: Optional[TodayAction] = None
+
+
+class TodayEmptyState(BaseModel):
+    """Empty-state content for Today hub."""
+    title: str
+    subtitle: Optional[str] = None
+    actions: List[TodayAction] = Field(default_factory=list)
+
+
+class TodayPlan(BaseModel):
+    """Full Today hub payload."""
+    state: str  # tasks | empty | no_plants
+    title: str
+    subtitle: Optional[str] = None
+    tasks: List[TodayTask] = Field(default_factory=list)
+    empty_state: Optional[TodayEmptyState] = None
+    local_date: Optional[str] = None
+    timezone: Optional[str] = None
+
+
+class TodayPlanResponse(BaseModel):
+    """Response wrapper for Today hub."""
+    today: TodayPlan

@@ -9,6 +9,7 @@ from bson import ObjectId
 from app.core.database import Database
 from app.core.exceptions import NotFoundException, BadRequestException
 from app.core.config import get_settings
+from app.core.s3_keys import normalize_s3_key
 from app.plants.models import (
     PlantCreate,
     PlantResponse,
@@ -19,6 +20,7 @@ from app.plants.models import (
 from app.plants.care_utils import convert_care_schedule_to_stored
 from app.plants.video_service import ImageService
 from app.core.aws import S3Service
+from app.ai.security import validate_user_owned_s3_key
 
 
 class PlantService:
@@ -179,6 +181,22 @@ class PlantService:
         """Save a plant to user's collection."""
         collection = cls._get_plants_collection()
 
+        # Store only S3 keys for user uploads. If a full S3 URL/presigned URL is sent,
+        # normalize it back to a key so it can be re-signed at response time.
+        normalized_image_value: Optional[str] = None
+        if plant_data.image_url:
+            settings = get_settings()
+            maybe_key = normalize_s3_key(
+                plant_data.image_url,
+                bucket=settings.AWS_S3_BUCKET,
+                region=settings.AWS_REGION,
+            )
+            if maybe_key:
+                normalized_image_value = validate_user_owned_s3_key(user_id, maybe_key)
+            else:
+                # Allow external image URLs for non-uploaded images.
+                normalized_image_value = plant_data.image_url.strip()
+
         care_schedule_doc = None
         if plant_data.care_schedule:
             care_schedule_doc = plant_data.care_schedule.model_dump()
@@ -215,7 +233,7 @@ class PlantService:
             "scientific_name": plant_data.scientific_name,
             "common_name": plant_data.common_name,
             "nickname": plant_data.nickname or plant_data.common_name,
-            "image_url": plant_data.image_url,
+            "image_url": normalized_image_value,
             "health_status": plant_data.health_status,
             "notes": plant_data.notes,
             "last_watered": plant_data.last_watered,
@@ -269,7 +287,7 @@ class PlantService:
         plant_doc["_id"] = result.inserted_id
 
         # ANALYSIS-002: Create an initial snapshot for the plant's cover image (append-only timeline).
-        if plant_data.image_url:
+        if normalized_image_value and (normalized_image_value.startswith("plants/") or normalized_image_value.startswith("uploads/")):
             try:
                 from app.plants.soil_logic import compute_soil_hint
 
@@ -296,7 +314,7 @@ class PlantService:
                     confidence=(plant_data.health.confidence if plant_data.health else float(plant_doc.get("health_confidence") or 0.0)),
                     issues=(plant_data.health.issues if plant_data.health else plant_doc.get("health_issues") or []),
                     immediate_actions=(plant_data.health.immediate_actions if plant_data.health else plant_doc.get("health_immediate_actions") or []),
-                    image_url=plant_data.image_url,
+                    image_url=normalized_image_value,
                     snapshot_type="initial",
                     analysis=analysis_doc,
                     soil=plant_data.soil,
@@ -450,6 +468,13 @@ class PlantService:
             raise NotFoundException("Plant not found")
 
         plant = await cls._ensure_immediate_fixes(plant)
+        try:
+            prompt = await cls._build_progress_prompt(plant_id, user_id, plant)
+            if prompt:
+                plant["progress_prompt"] = prompt
+        except Exception:
+            # Best-effort: never fail plant fetch due to prompt logic.
+            plant["progress_prompt"] = None
         return cls._doc_to_response(plant)
     
     @classmethod
@@ -460,6 +485,16 @@ class PlantService:
         
         # Remove None values
         updates = {k: v for k, v in updates.items() if v is not None}
+
+        # Normalize S3 URLs/presigned URLs into keys for storage.
+        if isinstance(updates.get("image_url"), str) and updates.get("image_url"):
+            settings = get_settings()
+            raw = updates["image_url"].strip()
+            maybe_key = normalize_s3_key(raw, bucket=settings.AWS_S3_BUCKET, region=settings.AWS_REGION)
+            if maybe_key:
+                updates["image_url"] = validate_user_owned_s3_key(user_id, maybe_key)
+            else:
+                updates["image_url"] = raw
         
         if updates:
             result = await collection.find_one_and_update(
@@ -633,6 +668,13 @@ class PlantService:
                 )
             except Exception:
                 pass
+
+            # Update Today's plan (mark task completed) if it exists.
+            try:
+                from app.plants.today_service import TodayPlanService
+                await TodayPlanService.mark_task_completed(user_id, plant_id, "water")
+            except Exception:
+                pass
         
         return cls._doc_to_response(result)
     
@@ -747,6 +789,35 @@ class PlantService:
             except Exception:
                 snapshot_type = "progress"
 
+        # Normalize keys (older callers may pass full S3 URLs / presigned URLs).
+        settings = get_settings()
+
+        normalized_image_key = None
+        if image_key or image_url:
+            candidate = (image_key or image_url or "").strip()
+            maybe_key = normalize_s3_key(candidate, bucket=settings.AWS_S3_BUCKET, region=settings.AWS_REGION)
+            if maybe_key:
+                normalized_image_key = validate_user_owned_s3_key(
+                    user_id,
+                    maybe_key,
+                    allowed_prefixes=[f"plants/{user_id}/", f"uploads/{user_id}/"],
+                )
+            else:
+                normalized_image_key = candidate or None
+
+        normalized_thumbnail_key = None
+        if thumbnail_key:
+            candidate = str(thumbnail_key).strip()
+            maybe_key = normalize_s3_key(candidate, bucket=settings.AWS_S3_BUCKET, region=settings.AWS_REGION)
+            if maybe_key:
+                normalized_thumbnail_key = validate_user_owned_s3_key(
+                    user_id,
+                    maybe_key,
+                    allowed_prefixes=[f"plants/{user_id}/", f"uploads/{user_id}/"],
+                )
+            else:
+                normalized_thumbnail_key = candidate or None
+
         snapshot = {
             "plant_id": plant_id,
             "user_id": user_id,
@@ -755,8 +826,8 @@ class PlantService:
             "confidence": confidence,
             "issues": issues or [],
             "immediate_actions": immediate_actions or [],
-            "image_key": image_key or image_url,
-            "thumbnail_key": thumbnail_key,
+            "image_key": normalized_image_key,
+            "thumbnail_key": normalized_thumbnail_key,
             "created_at": created_at,
         }
 
@@ -1089,6 +1160,52 @@ class PlantService:
                     pass
     
     # ==================== Helpers ====================
+
+    @classmethod
+    async def _build_progress_prompt(cls, plant_id: str, user_id: str, plant_doc: dict) -> Optional[dict]:
+        """Build the progress/check-in prompt for Plant Detail (backend-driven)."""
+        now = datetime.utcnow()
+        created_at = plant_doc.get("created_at") or now
+
+        latest = await cls._get_latest_health_snapshot(plant_id, user_id)
+        last_snapshot_at = latest.get("created_at") if latest else None
+
+        min_days = cls._min_days_between_snapshots()
+        base_threshold = max(min_days, 7)
+        attention_threshold = max(min_days, 3)
+
+        def build_prompt(title: str, subtitle: str) -> dict:
+            return {
+                "title": title,
+                "subtitle": subtitle,
+                "icon": "camera-outline",
+                "cta_label": "Add photo",
+                "cta_action": "add_progress_photo",
+                "cta_enabled": True,
+            }
+
+        # No snapshot yet.
+        if not last_snapshot_at:
+            days_since_created = (now.date() - created_at.date()).days
+            title = "Start your timeline" if days_since_created <= 7 else "Add your first photo"
+            subtitle = "Add a progress photo to track changes."
+            return build_prompt(title, subtitle)
+
+        # Time since last snapshot.
+        days_since_snapshot = (now.date() - last_snapshot_at.date()).days
+        if days_since_snapshot < 0:
+            return None
+
+        health_status = (plant_doc.get("health_status") or "").lower()
+        needs_attention = health_status in {"stressed", "needs_attention", "unhealthy", "critical"}
+
+        if needs_attention and days_since_snapshot >= attention_threshold:
+            return build_prompt("Check-in", "Add a photo to see if recovery is improving.")
+
+        if days_since_snapshot >= base_threshold:
+            return build_prompt("Weekly check-in", "Snap a progress photo to track growth.")
+
+        return None
     
     @classmethod
     def _doc_to_response(cls, doc: dict) -> PlantResponse:
@@ -1162,6 +1279,7 @@ class PlantService:
             soil_state=cls._normalize_soil_state(doc.get("soil_state")),
             initial_snapshot_id=doc.get("initial_snapshot_id"),
             last_analysis_at=doc.get("last_analysis_at"),
+            progress_prompt=doc.get("progress_prompt"),
         )
 
     @classmethod
