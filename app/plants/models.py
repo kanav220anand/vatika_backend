@@ -220,6 +220,7 @@ class PlantCreate(BaseModel):
 
 class PlantUpdate(BaseModel):
     """Schema to update a plant."""
+    nickname: Optional[str] = None
     health_status: Optional[str] = None
     notes: Optional[str] = None
     image_url: Optional[str] = None
