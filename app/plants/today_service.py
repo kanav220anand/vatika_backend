@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Tuple
 
 from zoneinfo import ZoneInfo
@@ -86,11 +86,11 @@ class TodayPlanService:
         if days is None:
             return "No upcoming care tasks"
         if days == 0:
-            return "Next up today"
-        if days == 1:
-            label = "Next up tomorrow"
+            label = "Water today"
+        elif days == 1:
+            label = "Water tomorrow"
         else:
-            label = f"Next up in {cls._plural(days, 'day')}"
+            label = f"Water in {cls._plural(days, 'day')}"
 
         if plant_name:
             return f"{label} · {plant_name}"
@@ -103,6 +103,7 @@ class TodayPlanService:
             "_id": 1,
             "nickname": 1,
             "common_name": 1,
+            "health_status": 1,
             "reminders_enabled": 1,
             "care_schedule": 1,
             "created_at": 1,
@@ -177,11 +178,65 @@ class TodayPlanService:
     def _pick_focus_plant(cls, plants: List[dict]) -> Optional[dict]:
         if not plants:
             return None
-        # Prefer least-recent activity for a gentle check-in.
-        def key(p: dict):
+        attention_statuses = {"critical", "unhealthy", "needs_attention", "stressed"}
+
+        def last_touch(p: dict) -> datetime:
             return p.get("last_event_at") or p.get("created_at") or datetime.utcnow()
 
-        return sorted(plants, key=key)[0]
+        attention = [
+            p for p in plants if (p.get("health_status") or "").lower() in attention_statuses
+        ]
+        if attention:
+            return sorted(attention, key=last_touch)[0]
+
+        # Prefer least-recent activity for a gentle check-in.
+        return sorted(plants, key=last_touch)[0]
+
+    @classmethod
+    async def _get_latest_snapshots(cls, user_id: str, plant_ids: List[str]) -> dict:
+        if not plant_ids:
+            return {}
+        collection = PlantService._get_health_snapshots_collection()
+        pipeline = [
+            {"$match": {"user_id": user_id, "plant_id": {"$in": plant_ids}}},
+            {"$sort": {"created_at": -1}},
+            {"$group": {"_id": "$plant_id", "created_at": {"$first": "$created_at"}}},
+        ]
+        latest = {}
+        async for row in collection.aggregate(pipeline):
+            if row and row.get("_id") and row.get("created_at"):
+                latest[str(row["_id"])] = row["created_at"]
+        return latest
+
+    @classmethod
+    async def _pick_photo_plant(cls, user_id: str, plants: List[dict]) -> Optional[dict]:
+        if not plants:
+            return None
+        plant_ids = [str(p.get("_id")) for p in plants if p.get("_id")]
+        latest_map = await cls._get_latest_snapshots(user_id, plant_ids)
+        min_days = PlantService._min_days_between_snapshots()
+        now = datetime.utcnow()
+
+        candidates: List[Tuple[int, datetime, dict]] = []
+        for plant in plants:
+            pid = str(plant.get("_id"))
+            last_snapshot = latest_map.get(pid)
+
+            if min_days > 0 and last_snapshot:
+                next_allowed = last_snapshot + timedelta(days=min_days)
+                if now < next_allowed:
+                    continue
+
+            # Prefer plants with no snapshots, then oldest snapshots.
+            rank = 0 if not last_snapshot else 1
+            snapshot_time = last_snapshot or datetime.min
+            candidates.append((rank, snapshot_time, plant))
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda item: (item[0], item[1]))
+        return candidates[0][2]
 
     @classmethod
     def _compute_next_due_info(
@@ -221,8 +276,8 @@ class TodayPlanService:
         }
 
     @classmethod
-    def _empty_state_caught_up(
-        cls, plants: List[dict], local_date: datetime.date, tz_name: Optional[str]
+    async def _empty_state_caught_up(
+        cls, user_id: str, plants: List[dict], local_date: datetime.date, tz_name: Optional[str]
     ) -> dict:
         focus = cls._pick_focus_plant(plants)
         next_days, next_plant = cls._compute_next_due_info(plants, local_date, tz_name)
@@ -232,24 +287,37 @@ class TodayPlanService:
             if next_plant
             else None
         )
+        photo_plant = await cls._pick_photo_plant(user_id, plants)
 
         actions = []
         if focus:
-            actions = [
+            actions.append(
                 {
                     "type": "open_plant",
                     "label": "Quick check-in",
                     "icon": "leaf-outline",
                     "plant_id": str(focus.get("_id")),
-                },
+                }
+            )
+        if photo_plant:
+            actions.append(
                 {
                     "type": "open_log",
                     "label": "Add progress photo",
                     "icon": "camera-outline",
-                    "plant_id": str(focus.get("_id")),
+                    "plant_id": str(photo_plant.get("_id")),
                     "payload": {"initialAction": "log"},
-                },
-            ]
+                }
+            )
+        elif focus:
+            actions.append(
+                {
+                    "type": "open_plant",
+                    "label": "Review care plan",
+                    "icon": "sunny-outline",
+                    "plant_id": str(focus.get("_id")),
+                }
+            )
 
         return {
             "title": "All caught up",
@@ -292,7 +360,7 @@ class TodayPlanService:
                 "empty_state": None,
             }
 
-        empty_state = cls._empty_state_caught_up(plants, local_day, tz_name)
+        empty_state = await cls._empty_state_caught_up(user_id, plants, local_day, tz_name)
         return {
             "user_id": user_id,
             "local_date": local_date,
@@ -301,10 +369,10 @@ class TodayPlanService:
             "updated_at": now,
             "state": "empty",
             "title": "Today",
-            "subtitle": empty_state.get("subtitle") or "",
-            "tasks": [],
-            "empty_state": empty_state,
-        }
+                "subtitle": "",
+                "tasks": [],
+                "empty_state": empty_state,
+            }
 
     @classmethod
     async def _sync_plan(
@@ -343,8 +411,8 @@ class TodayPlanService:
                 next_subtitle = ""
             else:
                 next_state = "empty"
-                next_empty_state = cls._empty_state_caught_up(plants, local_day, tz_name)
-                next_subtitle = next_empty_state.get("subtitle") or ""
+                next_empty_state = await cls._empty_state_caught_up(user_id, plants, local_day, tz_name)
+                next_subtitle = ""
 
         if filtered_tasks != tasks or next_state != plan.get("state"):
             updated = True
