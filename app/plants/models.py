@@ -451,3 +451,55 @@ class JournalResponse(BaseModel):
     entries: List[JournalEntry]
     total_count: int
     has_more: bool = False
+
+
+# ==================== Today Plan Models ====================
+
+
+class TodayAction(BaseModel):
+    """CTA action for Today hub."""
+    type: str
+    label: str
+    icon: Optional[str] = None
+    plant_id: Optional[str] = None
+    plant_name: Optional[str] = None
+    payload: Optional[Dict[str, Any]] = None
+
+
+class TodayTask(BaseModel):
+    """Task row in Today hub."""
+    id: str
+    type: str
+    plant_id: Optional[str] = None
+    plant_name: Optional[str] = None
+    status: Optional[str] = None  # overdue | due
+    primary_label: Optional[str] = None
+    secondary_label: Optional[str] = None
+    cta_label: Optional[str] = None
+    icon: Optional[str] = None
+    completed: bool = False
+    completed_at: Optional[datetime] = None
+    action: Optional[TodayAction] = None
+
+
+class TodayEmptyState(BaseModel):
+    """Empty-state content for Today hub."""
+    title: str
+    subtitle: Optional[str] = None
+    actions: List[TodayAction] = Field(default_factory=list)
+
+
+class TodayPlan(BaseModel):
+    """Full Today hub payload."""
+    state: str  # tasks | empty | no_plants
+    title: str
+    subtitle: Optional[str] = None
+    tasks: List[TodayTask] = Field(default_factory=list)
+    empty_state: Optional[TodayEmptyState] = None
+    local_date: Optional[str] = None
+    timezone: Optional[str] = None
+
+
+class TodayPlanResponse(BaseModel):
+    """Response wrapper for Today hub."""
+    today: TodayPlan

@@ -1,7 +1,7 @@
 """Service layer for cities directory."""
 
 import re
-from typing import List
+from typing import List, Optional
 from app.core.database import Database
 
 
@@ -11,6 +11,14 @@ class CitiesService:
     @staticmethod
     def get_collection():
         return Database.get_collection("cities")
+
+    @classmethod
+    async def get_by_name(cls, name: str) -> Optional[dict]:
+        """Fetch a city doc by exact name (case-insensitive)."""
+        if not name:
+            return None
+        collection = cls.get_collection()
+        return await collection.find_one({"name_lower": name.strip().lower()}, {"_id": 0})
 
     @classmethod
     async def search(cls, query: str = "", limit: int = 10) -> List[dict]:

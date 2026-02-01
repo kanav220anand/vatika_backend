@@ -661,6 +661,13 @@ class PlantService:
                 )
             except Exception:
                 pass
+
+            # Update Today's plan (mark task completed) if it exists.
+            try:
+                from app.plants.today_service import TodayPlanService
+                await TodayPlanService.mark_task_completed(user_id, plant_id, "water")
+            except Exception:
+                pass
         
         return cls._doc_to_response(result)
     

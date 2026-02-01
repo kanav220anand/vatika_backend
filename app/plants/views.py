@@ -34,8 +34,10 @@ from app.plants.models import (
     JournalEntryUpdate,
     JournalEntry,
     JournalResponse,
+    TodayPlanResponse,
 )
 from app.plants.service import PlantService
+from app.plants.today_service import TodayPlanService
 from app.plants.journal_service import JournalService
 from app.plants.openai_service import OpenAIService
 from app.plants.video_service import VideoService, ImageService, VideoProcessingError
@@ -428,6 +430,12 @@ async def get_plants_due_for_water(current_user: dict = Depends(get_current_user
     """Get plants that need watering today or are overdue."""
     plants = await PlantService.get_plants_needing_water(current_user["id"])
     return [add_signed_url_to_plant(p.dict() if hasattr(p, 'dict') else dict(p)) for p in plants]
+
+
+@router.get("/today", response_model=TodayPlanResponse)
+async def get_today_plan(current_user: dict = Depends(get_current_user)):
+    """Get (or generate) the user's Today plan for the current local day."""
+    return await TodayPlanService.get_today_plan(current_user["id"])
 
 
 @router.get("/search")
