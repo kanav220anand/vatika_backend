@@ -5,6 +5,7 @@ Run with DEBUG=true and check logs for IMAGE_URL_DEBUG entries.
 """
 
 import logging
+import time
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Query, Request, status
 
