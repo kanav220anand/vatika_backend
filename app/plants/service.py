@@ -9,6 +9,7 @@ from bson import ObjectId
 from app.core.database import Database
 from app.core.exceptions import NotFoundException, BadRequestException
 from app.core.config import get_settings
+from app.core.s3_keys import normalize_s3_key
 from app.plants.models import (
     PlantCreate,
     PlantResponse,
@@ -19,6 +20,7 @@ from app.plants.models import (
 from app.plants.care_utils import convert_care_schedule_to_stored
 from app.plants.video_service import ImageService
 from app.core.aws import S3Service
+from app.ai.security import validate_user_owned_s3_key
 
 
 class PlantService:
@@ -179,6 +181,22 @@ class PlantService:
         """Save a plant to user's collection."""
         collection = cls._get_plants_collection()
 
+        # Store only S3 keys for user uploads. If a full S3 URL/presigned URL is sent,
+        # normalize it back to a key so it can be re-signed at response time.
+        normalized_image_value: Optional[str] = None
+        if plant_data.image_url:
+            settings = get_settings()
+            maybe_key = normalize_s3_key(
+                plant_data.image_url,
+                bucket=settings.AWS_S3_BUCKET,
+                region=settings.AWS_REGION,
+            )
+            if maybe_key:
+                normalized_image_value = validate_user_owned_s3_key(user_id, maybe_key)
+            else:
+                # Allow external image URLs for non-uploaded images.
+                normalized_image_value = plant_data.image_url.strip()
+
         care_schedule_doc = None
         if plant_data.care_schedule:
             care_schedule_doc = plant_data.care_schedule.model_dump()
@@ -215,7 +233,7 @@ class PlantService:
             "scientific_name": plant_data.scientific_name,
             "common_name": plant_data.common_name,
             "nickname": plant_data.nickname or plant_data.common_name,
-            "image_url": plant_data.image_url,
+            "image_url": normalized_image_value,
             "health_status": plant_data.health_status,
             "notes": plant_data.notes,
             "last_watered": plant_data.last_watered,
@@ -269,7 +287,7 @@ class PlantService:
         plant_doc["_id"] = result.inserted_id
 
         # ANALYSIS-002: Create an initial snapshot for the plant's cover image (append-only timeline).
-        if plant_data.image_url:
+        if normalized_image_value and (normalized_image_value.startswith("plants/") or normalized_image_value.startswith("uploads/")):
             try:
                 from app.plants.soil_logic import compute_soil_hint
 
@@ -296,7 +314,7 @@ class PlantService:
                     confidence=(plant_data.health.confidence if plant_data.health else float(plant_doc.get("health_confidence") or 0.0)),
                     issues=(plant_data.health.issues if plant_data.health else plant_doc.get("health_issues") or []),
                     immediate_actions=(plant_data.health.immediate_actions if plant_data.health else plant_doc.get("health_immediate_actions") or []),
-                    image_url=plant_data.image_url,
+                    image_url=normalized_image_value,
                     snapshot_type="initial",
                     analysis=analysis_doc,
                     soil=plant_data.soil,
@@ -460,6 +478,16 @@ class PlantService:
         
         # Remove None values
         updates = {k: v for k, v in updates.items() if v is not None}
+
+        # Normalize S3 URLs/presigned URLs into keys for storage.
+        if isinstance(updates.get("image_url"), str) and updates.get("image_url"):
+            settings = get_settings()
+            raw = updates["image_url"].strip()
+            maybe_key = normalize_s3_key(raw, bucket=settings.AWS_S3_BUCKET, region=settings.AWS_REGION)
+            if maybe_key:
+                updates["image_url"] = validate_user_owned_s3_key(user_id, maybe_key)
+            else:
+                updates["image_url"] = raw
         
         if updates:
             result = await collection.find_one_and_update(
@@ -747,6 +775,35 @@ class PlantService:
             except Exception:
                 snapshot_type = "progress"
 
+        # Normalize keys (older callers may pass full S3 URLs / presigned URLs).
+        settings = get_settings()
+
+        normalized_image_key = None
+        if image_key or image_url:
+            candidate = (image_key or image_url or "").strip()
+            maybe_key = normalize_s3_key(candidate, bucket=settings.AWS_S3_BUCKET, region=settings.AWS_REGION)
+            if maybe_key:
+                normalized_image_key = validate_user_owned_s3_key(
+                    user_id,
+                    maybe_key,
+                    allowed_prefixes=[f"plants/{user_id}/", f"uploads/{user_id}/"],
+                )
+            else:
+                normalized_image_key = candidate or None
+
+        normalized_thumbnail_key = None
+        if thumbnail_key:
+            candidate = str(thumbnail_key).strip()
+            maybe_key = normalize_s3_key(candidate, bucket=settings.AWS_S3_BUCKET, region=settings.AWS_REGION)
+            if maybe_key:
+                normalized_thumbnail_key = validate_user_owned_s3_key(
+                    user_id,
+                    maybe_key,
+                    allowed_prefixes=[f"plants/{user_id}/", f"uploads/{user_id}/"],
+                )
+            else:
+                normalized_thumbnail_key = candidate or None
+
         snapshot = {
             "plant_id": plant_id,
             "user_id": user_id,
@@ -755,8 +812,8 @@ class PlantService:
             "confidence": confidence,
             "issues": issues or [],
             "immediate_actions": immediate_actions or [],
-            "image_key": image_key or image_url,
-            "thumbnail_key": thumbnail_key,
+            "image_key": normalized_image_key,
+            "thumbnail_key": normalized_thumbnail_key,
             "created_at": created_at,
         }
 
