@@ -82,14 +82,19 @@ class TodayPlanService:
         return f"Overdue by {cls._plural(days, 'day')}"
 
     @classmethod
-    def _format_next_up(cls, days: Optional[int]) -> str:
+    def _format_next_up(cls, days: Optional[int], plant_name: Optional[str] = None) -> str:
         if days is None:
             return "No upcoming care tasks"
         if days == 0:
             return "Next up today"
         if days == 1:
-            return "Next up tomorrow"
-        return f"Next up in {cls._plural(days, 'day')}"
+            label = "Next up tomorrow"
+        else:
+            label = f"Next up in {cls._plural(days, 'day')}"
+
+        if plant_name:
+            return f"{label} · {plant_name}"
+        return label
 
     @classmethod
     async def _fetch_user_plants(cls, user_id: str) -> List[dict]:
@@ -179,10 +184,11 @@ class TodayPlanService:
         return sorted(plants, key=key)[0]
 
     @classmethod
-    def _compute_next_due_days(
+    def _compute_next_due_info(
         cls, plants: List[dict], local_date: datetime.date, tz_name: Optional[str]
-    ) -> Optional[int]:
+    ) -> Tuple[Optional[int], Optional[dict]]:
         next_days: Optional[int] = None
+        next_plant: Optional[dict] = None
         for plant in plants:
             if plant.get("reminders_enabled") is False or not plant.get("care_schedule"):
                 continue
@@ -195,7 +201,8 @@ class TodayPlanService:
                 continue
             if next_days is None or diff_days < next_days:
                 next_days = diff_days
-        return next_days
+                next_plant = plant
+        return next_days, next_plant
 
     @classmethod
     def _empty_state_no_plants(cls) -> dict:
@@ -218,7 +225,13 @@ class TodayPlanService:
         cls, plants: List[dict], local_date: datetime.date, tz_name: Optional[str]
     ) -> dict:
         focus = cls._pick_focus_plant(plants)
-        next_days = cls._compute_next_due_days(plants, local_date, tz_name)
+        next_days, next_plant = cls._compute_next_due_info(plants, local_date, tz_name)
+        next_name = (
+            next_plant.get("nickname")
+            or next_plant.get("common_name")
+            if next_plant
+            else None
+        )
 
         actions = []
         if focus:
@@ -240,7 +253,7 @@ class TodayPlanService:
 
         return {
             "title": "All caught up",
-            "subtitle": cls._format_next_up(next_days),
+            "subtitle": cls._format_next_up(next_days, next_name),
             "actions": actions,
         }
 
