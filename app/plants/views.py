@@ -1,8 +1,14 @@
-"""Plants API routes."""
+"""Plants API routes.
 
-import time
+Debug logging for image URLs:
+Run with DEBUG=true and check logs for IMAGE_URL_DEBUG entries.
+"""
+
+import logging
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Query, Request, status
+
+logger = logging.getLogger(__name__)
 
 from app.core.dependencies import get_current_user
 from app.core.config import get_settings
@@ -371,6 +377,8 @@ def add_signed_url_to_plant(plant_dict: dict) -> dict:
     """
     Convert S3 key in image_url to a presigned URL.
     Only processes if image_url looks like an S3 key (starts with 'plants/' or 'uploads/').
+    
+    DEBUG: Logs what URL is being returned for each plant.
     """
     if not plant_dict.get("image_url"):
         return plant_dict
@@ -382,10 +390,15 @@ def add_signed_url_to_plant(plant_dict: dict) -> dict:
         try:
             s3_service = S3Service()
             # Generate presigned URL valid for 1 hour
-            plant_dict["image_url"] = s3_service.generate_presigned_get_url(image_url, expiration=3600)
-        except Exception:
+            signed_url = s3_service.generate_presigned_get_url(image_url, expiration=3600)
+            plant_dict["image_url"] = signed_url
+            logger.info(f"[IMAGE_URL_DEBUG] Plant {plant_dict.get('id')}: Generated presigned URL")
+        except Exception as e:
             # If presigned URL fails, leave as is
+            logger.warning(f"[IMAGE_URL_DEBUG] Plant {plant_dict.get('id')}: Failed to generate presigned URL for {image_url}. Error: {e}")
             pass
+    else:
+        logger.info(f"[IMAGE_URL_DEBUG] Plant {plant_dict.get('id')}: Using existing URL (not S3 key): {image_url[:80]}...")
     
     return plant_dict
 

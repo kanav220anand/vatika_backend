@@ -100,14 +100,14 @@ class S3Service:
             logger.error(f"Error generating presigned PUT URL: {e}")
             raise
 
-    def generate_presigned_get_url(self, object_name: str, expiration=300):
+    def generate_presigned_get_url(self, object_name: str, expiration: int = 300):
         """Generate a presigned URL for reading private objects."""
-        if not self.client:
+        if not self._s3_client:
             raise ValueError("AWS S3 credentials not configured.")
 
         try:
             bucket = self._validated_bucket_name()
-            url = self.client.generate_presigned_url(
+            url = self._s3_client.generate_presigned_url(
                 ClientMethod='get_object',
                 Params={
                     'Bucket': bucket,
@@ -115,9 +115,10 @@ class S3Service:
                 },
                 ExpiresIn=expiration
             )
+            logger.debug(f"[S3_DEBUG] Generated presigned URL for {object_name[:50]}... (bucket: {bucket})")
             return url
         except ClientError as e:
-            logger.error(f"Error generating presigned GET URL: {e}")
+            logger.error(f"[S3_DEBUG] Error generating presigned GET URL for {object_name}: {e}")
             raise
 
     def download_file_as_base64(self, object_name: str) -> str:

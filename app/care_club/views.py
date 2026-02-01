@@ -1,7 +1,14 @@
-"""Care Club API routes."""
+"""Care Club API routes.
+
+Debug logging for image URLs:
+Run with DEBUG=true and check logs for IMAGE_URL_DEBUG entries.
+"""
 
 from fastapi import APIRouter, Depends, Query, Path
 from typing import Optional, List
+import logging
+
+logger = logging.getLogger(__name__)
 
 from app.core.dependencies import get_current_user
 from app.core.database import Database
@@ -44,6 +51,8 @@ def _to_read_urls(urls: List[str], expiration: int = 3600) -> List[str]:
     - If already an absolute URL, keep it.
     - If `S3_BASE_URL` is configured, build a stable public URL from it.
     - Otherwise, generate a presigned GET URL (bucket is private → plain public URL 403s).
+    
+    DEBUG: Logs what URLs are being returned.
     """
     if not urls:
         return []
@@ -57,6 +66,7 @@ def _to_read_urls(urls: List[str], expiration: int = 3600) -> List[str]:
 
         v = value.strip()
         if v.startswith("http://") or v.startswith("https://"):
+            logger.info(f"[IMAGE_URL_DEBUG] CareClub: Using existing URL: {v[:80]}...")
             out.append(v)
             continue
 
@@ -67,10 +77,13 @@ def _to_read_urls(urls: List[str], expiration: int = 3600) -> List[str]:
         # we must presign these keys or they will 403/404.
         if key.startswith("plants/") or key.startswith("uploads/"):
             try:
-                out.append(s3.generate_presigned_get_url(key, expiration=expiration))
+                signed_url = s3.generate_presigned_get_url(key, expiration=expiration)
+                logger.info(f"[IMAGE_URL_DEBUG] CareClub: Generated presigned URL for {key[:50]}...")
+                out.append(signed_url)
                 continue
-            except Exception:
+            except Exception as e:
                 # Fall back to returning the key if signing fails.
+                logger.warning(f"[IMAGE_URL_DEBUG] CareClub: Failed to generate presigned URL for {key}. Error: {e}")
                 out.append(key)
                 continue
 
@@ -80,9 +93,11 @@ def _to_read_urls(urls: List[str], expiration: int = 3600) -> List[str]:
             if not base.endswith("/"):
                 base = base + "/"
             out.append(base + key)
+            logger.info(f"[IMAGE_URL_DEBUG] CareClub: Using S3_BASE_URL for {key[:50]}...")
             continue
 
         out.append(key)
+        logger.warning(f"[IMAGE_URL_DEBUG] CareClub: No URL conversion for {key[:50]}...")
 
     return out
 
