@@ -243,6 +243,17 @@ class ImmediateFixUpdateRequest(BaseModel):
     is_done: bool = Field(..., description="Mark fix as done/undone")
 
 
+class ProgressPrompt(BaseModel):
+    """Progress/check-in prompt for plant detail."""
+    title: str
+    subtitle: Optional[str] = None
+    icon: Optional[str] = None
+    cta_label: str
+    cta_action: str
+    cta_enabled: bool = True
+    next_allowed_at: Optional[datetime] = None
+
+
 class PlantResponse(BaseModel):
     """Response schema for a saved plant."""
     id: str
@@ -284,6 +295,7 @@ class PlantResponse(BaseModel):
     soil_state: Optional["SoilState"] = None
     initial_snapshot_id: Optional[str] = None
     last_analysis_at: Optional[datetime] = None
+    progress_prompt: Optional[ProgressPrompt] = None
 
 
 class PlantEventResponse(BaseModel):

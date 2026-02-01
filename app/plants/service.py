@@ -468,6 +468,13 @@ class PlantService:
             raise NotFoundException("Plant not found")
 
         plant = await cls._ensure_immediate_fixes(plant)
+        try:
+            prompt = await cls._build_progress_prompt(plant_id, user_id, plant)
+            if prompt:
+                plant["progress_prompt"] = prompt
+        except Exception:
+            # Best-effort: never fail plant fetch due to prompt logic.
+            plant["progress_prompt"] = None
         return cls._doc_to_response(plant)
     
     @classmethod
@@ -1153,6 +1160,52 @@ class PlantService:
                     pass
     
     # ==================== Helpers ====================
+
+    @classmethod
+    async def _build_progress_prompt(cls, plant_id: str, user_id: str, plant_doc: dict) -> Optional[dict]:
+        """Build the progress/check-in prompt for Plant Detail (backend-driven)."""
+        now = datetime.utcnow()
+        created_at = plant_doc.get("created_at") or now
+
+        latest = await cls._get_latest_health_snapshot(plant_id, user_id)
+        last_snapshot_at = latest.get("created_at") if latest else None
+
+        min_days = cls._min_days_between_snapshots()
+        base_threshold = max(min_days, 7)
+        attention_threshold = max(min_days, 3)
+
+        def build_prompt(title: str, subtitle: str) -> dict:
+            return {
+                "title": title,
+                "subtitle": subtitle,
+                "icon": "camera-outline",
+                "cta_label": "Add photo",
+                "cta_action": "add_progress_photo",
+                "cta_enabled": True,
+            }
+
+        # No snapshot yet.
+        if not last_snapshot_at:
+            days_since_created = (now.date() - created_at.date()).days
+            title = "Start your timeline" if days_since_created <= 7 else "Add your first photo"
+            subtitle = "Add a progress photo to track changes."
+            return build_prompt(title, subtitle)
+
+        # Time since last snapshot.
+        days_since_snapshot = (now.date() - last_snapshot_at.date()).days
+        if days_since_snapshot < 0:
+            return None
+
+        health_status = (plant_doc.get("health_status") or "").lower()
+        needs_attention = health_status in {"stressed", "needs_attention", "unhealthy", "critical"}
+
+        if needs_attention and days_since_snapshot >= attention_threshold:
+            return build_prompt("Check-in", "Add a photo to see if recovery is improving.")
+
+        if days_since_snapshot >= base_threshold:
+            return build_prompt("Weekly check-in", "Snap a progress photo to track growth.")
+
+        return None
     
     @classmethod
     def _doc_to_response(cls, doc: dict) -> PlantResponse:
@@ -1226,6 +1279,7 @@ class PlantService:
             soil_state=cls._normalize_soil_state(doc.get("soil_state")),
             initial_snapshot_id=doc.get("initial_snapshot_id"),
             last_analysis_at=doc.get("last_analysis_at"),
+            progress_prompt=doc.get("progress_prompt"),
         )
 
     @classmethod
