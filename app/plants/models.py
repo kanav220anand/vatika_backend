@@ -484,7 +484,7 @@ class TodayTask(BaseModel):
     type: str
     plant_id: Optional[str] = None
     plant_name: Optional[str] = None
-    status: Optional[str] = None  # overdue | due
+    status: Optional[str] = None  # overdue | due | upcoming
     primary_label: Optional[str] = None
     secondary_label: Optional[str] = None
     cta_label: Optional[str] = None
@@ -501,6 +501,14 @@ class TodayEmptyState(BaseModel):
     actions: List[TodayAction] = Field(default_factory=list)
 
 
+class UpcomingPlan(BaseModel):
+    """Upcoming section payload for Today hub."""
+    title: str
+    subtitle: Optional[str] = None
+    tasks: List[TodayTask] = Field(default_factory=list)
+    empty_state: Optional[TodayEmptyState] = None
+
+
 class TodayPlan(BaseModel):
     """Full Today hub payload."""
     state: str  # tasks | empty | no_plants
@@ -508,6 +516,7 @@ class TodayPlan(BaseModel):
     subtitle: Optional[str] = None
     tasks: List[TodayTask] = Field(default_factory=list)
     empty_state: Optional[TodayEmptyState] = None
+    upcoming: Optional[UpcomingPlan] = None
     local_date: Optional[str] = None
     timezone: Optional[str] = None
 
@@ -515,3 +524,4 @@ class TodayPlan(BaseModel):
 class TodayPlanResponse(BaseModel):
     """Response wrapper for Today hub."""
     today: TodayPlan
+    upcoming: Optional[UpcomingPlan] = None

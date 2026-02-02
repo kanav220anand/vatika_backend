@@ -20,6 +20,7 @@ except Exception:  # pragma: no cover - optional dependency fallback
 
 class TodayPlanService:
     """Builds and persists the daily Today plan for a user."""
+    UPCOMING_WINDOW_DAYS = 3
 
     @staticmethod
     def _get_collection():
@@ -97,6 +98,17 @@ class TodayPlanService:
         return label
 
     @classmethod
+    def _format_upcoming_label(cls, days: int) -> str:
+        if days == 1:
+            return "Water tomorrow"
+        return f"Water in {cls._plural(days, 'day')}"
+
+    @classmethod
+    def _format_date_label(cls, date_value: datetime.date) -> str:
+        label = date_value.strftime("%a, %b %d")
+        return label.replace(" 0", " ")
+
+    @classmethod
     async def _fetch_user_plants(cls, user_id: str) -> List[dict]:
         collection = PlantService._get_plants_collection()
         fields = {
@@ -159,6 +171,59 @@ class TodayPlanService:
 
             # Sort: overdue first, then due today. Larger overdue first.
             sort_key = (0 if status == "overdue" else 1, diff_days)
+            tasks.append((sort_key, task))
+
+        tasks.sort(key=lambda item: item[0])
+        return [task for _, task in tasks]
+
+    @classmethod
+    def _build_upcoming_tasks(
+        cls,
+        plants: List[dict],
+        local_date: datetime.date,
+        tz_name: Optional[str],
+        window_days: int,
+    ) -> List[dict]:
+        tasks: List[Tuple[Tuple[int, str], dict]] = []
+        for plant in plants:
+            if plant.get("reminders_enabled") is False:
+                continue
+            if not plant.get("care_schedule"):
+                continue
+            next_water = PlantService.calculate_next_water_date(plant)
+            if not next_water:
+                continue
+
+            next_local = cls._to_local_date(next_water, tz_name)
+            diff_days = (next_local - local_date).days
+            if diff_days <= 0 or diff_days > window_days:
+                continue
+
+            plant_id = str(plant.get("_id"))
+            plant_name = plant.get("nickname") or plant.get("common_name") or "Your plant"
+
+            task = {
+                "id": f"upcoming:{plant_id}:{next_local.isoformat()}",
+                "type": "water",
+                "plant_id": plant_id,
+                "plant_name": plant_name,
+                "status": "upcoming",
+                "primary_label": cls._format_upcoming_label(diff_days),
+                "secondary_label": cls._format_date_label(next_local),
+                "cta_label": "View",
+                "icon": "calendar-outline",
+                "completed": False,
+                "completed_at": None,
+                "action": {
+                    "type": "open_plant",
+                    "label": "View plan",
+                    "plant_id": plant_id,
+                    "plant_name": plant_name,
+                    "icon": "calendar-outline",
+                },
+            }
+
+            sort_key = (diff_days, plant_name.lower())
             tasks.append((sort_key, task))
 
         tasks.sort(key=lambda item: item[0])
@@ -326,10 +391,40 @@ class TodayPlanService:
         }
 
     @classmethod
+    def _empty_state_upcoming(cls, window_days: int) -> dict:
+        return {
+            "title": "Nothing upcoming",
+            "subtitle": f"No care tasks in the next {window_days} days.",
+            "actions": [],
+        }
+
+    @classmethod
+    def _build_upcoming_payload(
+        cls, plants: List[dict], local_day: datetime.date, tz_name: Optional[str]
+    ) -> dict:
+        upcoming_tasks = cls._build_upcoming_tasks(
+            plants, local_day, tz_name, cls.UPCOMING_WINDOW_DAYS
+        )
+        if not plants:
+            upcoming_empty_state = cls._empty_state_no_plants()
+        elif not upcoming_tasks:
+            upcoming_empty_state = cls._empty_state_upcoming(cls.UPCOMING_WINDOW_DAYS)
+        else:
+            upcoming_empty_state = None
+
+        return {
+            "title": "Upcoming",
+            "subtitle": f"Next {cls.UPCOMING_WINDOW_DAYS} days",
+            "tasks": upcoming_tasks,
+            "empty_state": upcoming_empty_state,
+        }
+
+    @classmethod
     async def _build_plan_doc(cls, user_id: str, local_date: str, tz_name: Optional[str]) -> dict:
         now = datetime.utcnow()
         plants = await cls._fetch_user_plants(user_id)
         local_day = datetime.fromisoformat(local_date).date()
+        upcoming_payload = cls._build_upcoming_payload(plants, local_day, tz_name)
 
         if not plants:
             return {
@@ -343,6 +438,7 @@ class TodayPlanService:
                 "subtitle": "",
                 "tasks": [],
                 "empty_state": cls._empty_state_no_plants(),
+                "upcoming": upcoming_payload,
             }
 
         tasks = cls._build_due_tasks(plants, local_day, tz_name)
@@ -358,6 +454,7 @@ class TodayPlanService:
                 "subtitle": cls._format_subtitle(tasks),
                 "tasks": tasks,
                 "empty_state": None,
+                "upcoming": upcoming_payload,
             }
 
         empty_state = await cls._empty_state_caught_up(user_id, plants, local_day, tz_name)
@@ -369,10 +466,11 @@ class TodayPlanService:
             "updated_at": now,
             "state": "empty",
             "title": "Today",
-                "subtitle": "",
-                "tasks": [],
-                "empty_state": empty_state,
-            }
+            "subtitle": "",
+            "tasks": [],
+            "empty_state": empty_state,
+            "upcoming": upcoming_payload,
+        }
 
     @classmethod
     async def _sync_plan(
@@ -394,6 +492,8 @@ class TodayPlanService:
         ]
         if new_tasks:
             filtered_tasks.extend(new_tasks)
+
+        upcoming_payload = cls._build_upcoming_payload(plants, local_day, tz_name)
 
         updated = False
         next_state = plan.get("state") or "empty"
@@ -420,12 +520,15 @@ class TodayPlanService:
             updated = True
         if next_subtitle != plan.get("subtitle"):
             updated = True
+        if upcoming_payload != plan.get("upcoming"):
+            updated = True
 
         if updated:
             plan["tasks"] = filtered_tasks
             plan["state"] = next_state
             plan["empty_state"] = next_empty_state
             plan["subtitle"] = next_subtitle
+            plan["upcoming"] = upcoming_payload
             plan["updated_at"] = datetime.utcnow()
             await cls._get_collection().update_one(
                 {"_id": plan["_id"]},
@@ -435,6 +538,7 @@ class TodayPlanService:
                         "state": plan["state"],
                         "empty_state": plan["empty_state"],
                         "subtitle": plan["subtitle"],
+                        "upcoming": plan["upcoming"],
                         "updated_at": plan["updated_at"],
                     }
                 },
@@ -445,7 +549,8 @@ class TodayPlanService:
     @classmethod
     def _to_response(cls, plan: dict) -> dict:
         payload = {k: v for k, v in plan.items() if k not in {"_id", "user_id", "created_at", "updated_at"}}
-        return {"today": payload}
+        upcoming = payload.pop("upcoming", None)
+        return {"today": payload, "upcoming": upcoming}
 
     # Public API -----------------------------------------------------
 
