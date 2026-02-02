@@ -345,13 +345,6 @@ class TodayPlanService:
         cls, user_id: str, plants: List[dict], local_date: datetime.date, tz_name: Optional[str]
     ) -> dict:
         focus = cls._pick_focus_plant(plants)
-        next_days, next_plant = cls._compute_next_due_info(plants, local_date, tz_name)
-        next_name = (
-            next_plant.get("nickname")
-            or next_plant.get("common_name")
-            if next_plant
-            else None
-        )
         photo_plant = await cls._pick_photo_plant(user_id, plants)
 
         actions = []
@@ -386,7 +379,7 @@ class TodayPlanService:
 
         return {
             "title": "All caught up",
-            "subtitle": cls._format_next_up(next_days, next_name),
+            "subtitle": "",
             "actions": actions,
         }
 
