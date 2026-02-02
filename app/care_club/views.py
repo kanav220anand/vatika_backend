@@ -16,6 +16,7 @@ from app.core.s3_urls import presign_user_uploads
 from app.core.exceptions import NotFoundException
 from app.care_club.models import (
     CreatePostRequest,
+    UpdatePostRequest,
     ResolvePostRequest,
     CreateCommentRequest,
     PostResponse,
@@ -128,6 +129,44 @@ async def get_post(
     # Enrich
     posts = await EnrichmentService.enrich_posts([post])
     post = posts[0]
+
+    return PostResponse(
+        id=post["id"],
+        plant_id=post["plant_id"],
+        author_id=post["author_id"],
+        title=post["title"],
+        details=post.get("details"),
+        tried=post.get("tried"),
+        photo_urls=_to_read_urls(post.get("photo_urls", [])),
+        status=post["status"],
+        moderation_status=post.get("moderation_status", "active"),
+        resolved_at=post.get("resolved_at"),
+        resolved_note=post.get("resolved_note"),
+        created_at=post["created_at"],
+        updated_at=post["updated_at"],
+        last_activity_at=post["last_activity_at"],
+        aggregates=PostAggregates(**post.get("aggregates", {})),
+        author=AuthorInfo(**post["author"]) if post.get("author") else None,
+        plant=PlantInfo(**post["plant"]) if post.get("plant") else None,
+    )
+
+
+@router.patch("/posts/{post_id}", response_model=PostResponse)
+async def update_post(
+    post_id: str = Path(..., description="Post ID"),
+    request: UpdatePostRequest = ...,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Update a Care Club post (author only).
+    """
+    post = await CareClubRepository.update_post(
+        post_id=post_id,
+        user_id=current_user["id"],
+        updates=request.model_dump(exclude_unset=True),
+    )
+
+    post = (await EnrichmentService.enrich_posts([post]))[0]
 
     return PostResponse(
         id=post["id"],

@@ -41,6 +41,22 @@ class CreatePostRequest(BaseModel):
         return v or []
 
 
+class UpdatePostRequest(BaseModel):
+    """Request to update a Care Club post."""
+    plant_id: Optional[str] = Field(None, description="User's plant ID")
+    title: Optional[str] = Field(None, min_length=1, max_length=120)
+    details: Optional[str] = Field(None, max_length=1000)
+    tried: Optional[str] = Field(None, max_length=600, description="What have you tried?")
+    photo_urls: Optional[List[str]] = Field(default_factory=list, max_length=5)
+
+    @field_validator('photo_urls')
+    @classmethod
+    def validate_photo_urls(cls, v):
+        if v and len(v) > 5:
+            raise ValueError('Maximum 5 photos allowed')
+        return v or []
+
+
 class ResolvePostRequest(BaseModel):
     """Request to resolve a post."""
     resolved_note: str = Field(..., min_length=1, max_length=600, description="What worked")

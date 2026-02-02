@@ -5,6 +5,8 @@ from typing import Optional, List, Tuple, Dict, Any
 from bson import ObjectId
 
 from app.core.database import Database
+from app.core.config import get_settings
+from app.core.s3_keys import normalize_s3_key
 from app.core.exceptions import NotFoundException, ForbiddenException, AppException
 
 
@@ -170,6 +172,69 @@ class CareClubRepository:
         post_doc.pop("_id", None)
 
         return post_doc
+
+    @classmethod
+    async def update_post(
+        cls,
+        post_id: str,
+        user_id: str,
+        updates: Dict[str, Any],
+    ) -> dict:
+        """Update a post. Only author can update."""
+        if not ObjectId.is_valid(post_id):
+            raise NotFoundException("Post not found")
+
+        collection = cls._posts_collection()
+        post = await collection.find_one({"_id": ObjectId(post_id)})
+        if not post:
+            raise NotFoundException("Post not found")
+
+        if post.get("author_id") != user_id:
+            raise ForbiddenException("Only the post author can update it")
+
+        update_doc: Dict[str, Any] = {}
+
+        if "plant_id" in updates and updates.get("plant_id"):
+            plant_id = updates["plant_id"]
+            if not ObjectId.is_valid(plant_id):
+                raise NotFoundException("Plant not found")
+            plant = await cls._plants_collection().find_one({"_id": ObjectId(plant_id), "user_id": user_id})
+            if not plant:
+                raise ForbiddenException("You can only attach your own plants")
+            update_doc["plant_id"] = plant_id
+
+        if "title" in updates:
+            update_doc["title"] = (updates.get("title") or "").strip()
+
+        if "details" in updates:
+            update_doc["details"] = (updates.get("details") or "").strip() or None
+
+        if "tried" in updates:
+            update_doc["tried"] = (updates.get("tried") or "").strip() or None
+
+        if "photo_urls" in updates:
+            raw_urls = updates.get("photo_urls") or []
+            settings = get_settings()
+            normalized_urls: List[str] = []
+            for value in raw_urls:
+                if not value or not isinstance(value, str):
+                    continue
+                normalized = normalize_s3_key(value, bucket=settings.AWS_S3_BUCKET, region=settings.AWS_REGION)
+                normalized_urls.append(normalized or value.strip())
+            update_doc["photo_urls"] = normalized_urls
+
+        if not update_doc:
+            post["id"] = str(post.pop("_id"))
+            return post
+
+        now = datetime.utcnow()
+        update_doc["updated_at"] = now
+
+        await collection.update_one({"_id": ObjectId(post_id)}, {"$set": update_doc})
+
+        updated = await collection.find_one({"_id": ObjectId(post_id)})
+        updated["id"] = str(updated.pop("_id"))
+        return updated
 
     @classmethod
     async def resolve_post(
