@@ -503,47 +503,11 @@ class EnrichmentService:
     def _maybe_presign_asset(key: Optional[str], expiration: int = 3600) -> Optional[str]:
         """
         Convert stored S3 keys into a loadable URL for clients.
-        If S3_BASE_URL is configured, use it; else generate a presigned GET URL.
+        Presigns user-uploaded keys; leaves external URLs unchanged.
         """
-        if not key:
-            return None
-        value = str(key).strip()
-        if value.startswith("http://") or value.startswith("https://"):
-            # Best-effort: recover expired presigned URLs by extracting the key.
-            try:
-                from urllib.parse import urlparse, unquote
-                parsed = urlparse(value)
-                path = unquote(parsed.path or "").lstrip("/")
-                for prefix in ("plants/", "uploads/", "avatars/"):
-                    idx = path.find(prefix)
-                    if idx != -1:
-                        from app.core.aws import S3Service
-                        return S3Service().generate_presigned_get_url(path[idx:], expiration=expiration)
-            except Exception:
-                return value
-            return value
+        from app.core.s3_urls import presign_user_upload
 
-        normalized = value.lstrip("/")
-
-        # IMPORTANT: user uploads (plants/, uploads/) are typically stored in a private uploads bucket.
-        # Do NOT use S3_BASE_URL here (often points to a separate public assets bucket).
-        if normalized.startswith("plants/") or normalized.startswith("uploads/"):
-            try:
-                from app.core.aws import S3Service
-                return S3Service().generate_presigned_get_url(normalized, expiration=expiration)
-            except Exception:
-                return normalized
-
-        # For non-upload assets, fall back to S3_BASE_URL if configured.
-        from app.core.config import get_settings
-        settings = get_settings()
-        base = (settings.S3_BASE_URL or "").strip()
-        if base:
-            if not base.endswith("/"):
-                base = base + "/"
-            return base + normalized
-
-        return normalized
+        return presign_user_upload(key, expiration=expiration)
 
     @classmethod
     async def get_authors_batch(cls, author_ids: List[str]) -> Dict[str, dict]:

@@ -42,8 +42,7 @@ from app.plants.today_service import TodayPlanService
 from app.plants.journal_service import JournalService
 from app.plants.openai_service import OpenAIService
 from app.plants.video_service import VideoService, ImageService, VideoProcessingError
-from app.core.aws import S3Service
-from app.core.s3_keys import normalize_s3_key
+from app.core.s3_urls import presign_user_upload
 from app.plants.events_service import EventService
 from app.ai.rate_limit import enforce_ai_limits
 from app.ai.security import validate_user_owned_s3_key, validate_base64_payload
@@ -391,25 +390,13 @@ def add_signed_url_to_plant(plant_dict: dict) -> dict:
     if not image_url:
         return plant_dict
 
-    settings = get_settings()
-    key = normalize_s3_key(image_url, bucket=settings.AWS_S3_BUCKET, region=settings.AWS_REGION)
-    
-    # Only presign our user-uploaded keys (plants/... or uploads/...).
-    if key and (key.startswith("plants/") or key.startswith("uploads/")):
-        try:
-            s3_service = S3Service()
-            # Generate presigned URL valid for 1 hour
-            signed_url = s3_service.generate_presigned_get_url(key, expiration=3600)
-            plant_dict["image_url"] = signed_url
-            logger.info(f"[IMAGE_URL_DEBUG] Plant {plant_dict.get('id')}: Generated presigned URL")
-        except Exception as e:
-            # If presigned URL fails, leave as is
-            logger.warning(
-                f"[IMAGE_URL_DEBUG] Plant {plant_dict.get('id')}: Failed to generate presigned URL for {key}. Error: {e}"
-            )
-            pass
+    resolved = presign_user_upload(image_url, expiration=3600)
+    if resolved != image_url:
+        logger.info(f"[IMAGE_URL_DEBUG] Plant {plant_dict.get('id')}: Generated presigned URL")
     else:
         logger.info(f"[IMAGE_URL_DEBUG] Plant {plant_dict.get('id')}: Using existing URL (not S3 key): {image_url[:80]}...")
+
+    plant_dict["image_url"] = resolved
     
     return plant_dict
 
