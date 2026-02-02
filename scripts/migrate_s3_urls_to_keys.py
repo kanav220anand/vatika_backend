@@ -11,6 +11,8 @@ Collections updated (best-effort):
 - plants.image_url
 - health_snapshots.image_key, health_snapshots.thumbnail_key
 - users.profile_picture (only if it points to our S3 bucket)
+- care_club_posts.photo_urls (array)
+- care_club_comments.photo_urls (array)
 
 Usage:
   python scripts/migrate_s3_urls_to_keys.py --dry-run
@@ -57,8 +59,20 @@ async def migrate(dry_run: bool) -> None:
     if not bucket:
         raise RuntimeError("AWS_S3_BUCKET must be set for this migration.")
 
-    changed = {"plants": 0, "health_snapshots": 0, "users": 0}
-    scanned = {"plants": 0, "health_snapshots": 0, "users": 0}
+    changed = {
+        "plants": 0,
+        "health_snapshots": 0,
+        "users": 0,
+        "care_club_posts": 0,
+        "care_club_comments": 0,
+    }
+    scanned = {
+        "plants": 0,
+        "health_snapshots": 0,
+        "users": 0,
+        "care_club_posts": 0,
+        "care_club_comments": 0,
+    }
 
     # ---------------- plants.image_url ----------------
     plants = db["plants"]
@@ -131,6 +145,68 @@ async def migrate(dry_run: bool) -> None:
         if res.modified_count:
             changed["users"] += 1
 
+    # ---------------- care_club_posts.photo_urls ----------------
+    posts = db["care_club_posts"]
+    cursor = posts.find({"photo_urls": {"$type": "array"}}, {"photo_urls": 1})
+    async for doc in cursor:
+        scanned["care_club_posts"] += 1
+        cur_list = doc.get("photo_urls") or []
+        if not isinstance(cur_list, list) or not cur_list:
+            continue
+
+        updated = []
+        did_change = False
+        for item in cur_list:
+            if not isinstance(item, str):
+                updated.append(item)
+                continue
+            key = normalize(item, bucket=bucket, region=region)
+            if key and key != item:
+                updated.append(key)
+                did_change = True
+            else:
+                updated.append(item)
+
+        if not did_change:
+            continue
+        if dry_run:
+            changed["care_club_posts"] += 1
+            continue
+        res = await posts.update_one({"_id": doc["_id"]}, {"$set": {"photo_urls": updated}})
+        if res.modified_count:
+            changed["care_club_posts"] += 1
+
+    # ---------------- care_club_comments.photo_urls ----------------
+    comments = db["care_club_comments"]
+    cursor = comments.find({"photo_urls": {"$type": "array"}}, {"photo_urls": 1})
+    async for doc in cursor:
+        scanned["care_club_comments"] += 1
+        cur_list = doc.get("photo_urls") or []
+        if not isinstance(cur_list, list) or not cur_list:
+            continue
+
+        updated = []
+        did_change = False
+        for item in cur_list:
+            if not isinstance(item, str):
+                updated.append(item)
+                continue
+            key = normalize(item, bucket=bucket, region=region)
+            if key and key != item:
+                updated.append(key)
+                did_change = True
+            else:
+                updated.append(item)
+
+        if not did_change:
+            continue
+        if dry_run:
+            changed["care_club_comments"] += 1
+            continue
+        res = await comments.update_one({"_id": doc["_id"]}, {"$set": {"photo_urls": updated}})
+        if res.modified_count:
+            changed["care_club_comments"] += 1
+
     print("Scanned:", scanned)
     print("Would change:" if dry_run else "Changed:", changed)
     client.close()
@@ -145,4 +221,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

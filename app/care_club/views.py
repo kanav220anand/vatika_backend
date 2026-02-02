@@ -6,6 +6,7 @@ Run with DEBUG=true and check logs for IMAGE_URL_DEBUG entries.
 
 from fastapi import APIRouter, Depends, Query, Path
 from typing import Optional, List
+from urllib.parse import urlparse, unquote
 import logging
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,29 @@ from app.care_club.moderation_service import ModerationService
 
 router = APIRouter(prefix="/care-club", tags=["Care Club"])
 
+def _extract_upload_key(value: str) -> Optional[str]:
+    """Best-effort extraction of S3 key from a URL or raw string."""
+    if not value:
+        return None
+
+    candidates = ("plants/", "uploads/", "avatars/")
+    for prefix in candidates:
+        idx = value.find(prefix)
+        if idx != -1:
+            return value[idx:]
+
+    try:
+        parsed = urlparse(value)
+        path = unquote(parsed.path or "").lstrip("/")
+        for prefix in candidates:
+            idx = path.find(prefix)
+            if idx != -1:
+                return path[idx:]
+    except Exception:
+        return None
+
+    return None
+
 def _to_read_urls(urls: List[str], expiration: int = 3600) -> List[str]:
     """
     Convert stored DB values into URLs that the app can actually load.
@@ -66,8 +90,18 @@ def _to_read_urls(urls: List[str], expiration: int = 3600) -> List[str]:
 
         v = value.strip()
         if v.startswith("http://") or v.startswith("https://"):
-            logger.info(f"[IMAGE_URL_DEBUG] CareClub: Using existing URL: {v[:80]}...")
-            out.append(v)
+            key_from_url = _extract_upload_key(v)
+            if key_from_url and (key_from_url.startswith("plants/") or key_from_url.startswith("uploads/") or key_from_url.startswith("avatars/")):
+                try:
+                    signed_url = s3.generate_presigned_get_url(key_from_url, expiration=expiration)
+                    logger.info(f"[IMAGE_URL_DEBUG] CareClub: Re-signed URL for {key_from_url[:50]}...")
+                    out.append(signed_url)
+                except Exception as e:
+                    logger.warning(f"[IMAGE_URL_DEBUG] CareClub: Failed to re-sign {key_from_url}. Error: {e}")
+                    out.append(v)
+            else:
+                logger.info(f"[IMAGE_URL_DEBUG] CareClub: Using existing URL: {v[:80]}...")
+                out.append(v)
             continue
 
         key = v.lstrip("/")

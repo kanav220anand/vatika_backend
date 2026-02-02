@@ -509,6 +509,18 @@ class EnrichmentService:
             return None
         value = str(key).strip()
         if value.startswith("http://") or value.startswith("https://"):
+            # Best-effort: recover expired presigned URLs by extracting the key.
+            try:
+                from urllib.parse import urlparse, unquote
+                parsed = urlparse(value)
+                path = unquote(parsed.path or "").lstrip("/")
+                for prefix in ("plants/", "uploads/", "avatars/"):
+                    idx = path.find(prefix)
+                    if idx != -1:
+                        from app.core.aws import S3Service
+                        return S3Service().generate_presigned_get_url(path[idx:], expiration=expiration)
+            except Exception:
+                return value
             return value
 
         normalized = value.lstrip("/")
