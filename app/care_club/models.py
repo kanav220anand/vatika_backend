@@ -86,6 +86,7 @@ class AuthorInfo(BaseModel):
     city: Optional[str] = None
     level: int = 1
     title: Optional[str] = None
+    profile_picture_url: Optional[str] = None
 
 
 class PlantInfo(BaseModel):

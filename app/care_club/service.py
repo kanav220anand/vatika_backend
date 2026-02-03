@@ -103,6 +103,50 @@ class CareClubRepository:
         return posts, total, has_more, next_cursor
 
     @classmethod
+    async def list_my_posts(
+        cls,
+        author_id: str,
+        limit: int = 20,
+        cursor: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> Tuple[List[dict], int, bool, Optional[str]]:
+        """
+        List posts by the given author (current user's posts). Same pagination as list_posts.
+        Returns: (posts, total_count, has_more, next_cursor)
+        """
+        collection = cls._posts_collection()
+        base_filter: Dict[str, Any] = {
+            "author_id": author_id,
+            "$or": [
+                {"moderation_status": "active"},
+                {"moderation_status": {"$exists": False}},
+            ],
+        }
+        if status:
+            base_filter["status"] = status
+
+        filter_query = dict(base_filter)
+        if cursor:
+            try:
+                cursor_time = datetime.fromisoformat(cursor)
+                filter_query["created_at"] = {"$lt": cursor_time}
+            except ValueError:
+                pass
+
+        total = await collection.count_documents(base_filter)
+        posts_cursor = collection.find(filter_query).sort("created_at", -1).limit(limit + 1)
+        posts = await posts_cursor.to_list(length=limit + 1)
+
+        has_more = len(posts) > limit
+        if has_more:
+            posts = posts[:limit]
+        next_cursor = posts[-1]["created_at"].isoformat() if has_more and posts else None
+
+        for post in posts:
+            post["id"] = str(post.pop("_id"))
+        return posts, total, has_more, next_cursor
+
+    @classmethod
     async def get_post(cls, post_id: str) -> dict:
         """Get a single post by ID."""
         if not ObjectId.is_valid(post_id):
@@ -582,7 +626,7 @@ class EnrichmentService:
 
         users_cursor = cls._users_collection().find(
             {"_id": {"$in": [ObjectId(uid) for uid in author_ids if ObjectId.is_valid(uid)]}},
-            {"name": 1, "city": 1, "level": 1, "title": 1, "profile_visibility": 1},
+            {"name": 1, "city": 1, "level": 1, "title": 1, "profile_visibility": 1, "profile_picture": 1},
         )
         
         authors = {}
@@ -596,15 +640,18 @@ class EnrichmentService:
                     "city": None,
                     "level": 1,
                     "title": None,
+                    "profile_picture_url": None,
                     "_visibility": "private",
                 }
             else:
+                profile_picture_url = cls._maybe_presign_asset(user.get("profile_picture"))
                 authors[user_id] = {
                     "id": user_id,
                     "name": user.get("name", "Unknown"),
                     "city": user.get("city"),
                     "level": user.get("level", 1),
                     "title": user.get("title"),
+                    "profile_picture_url": profile_picture_url,
                     "_visibility": "public",
                 }
 

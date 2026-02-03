@@ -115,6 +115,48 @@ async def list_posts(
     )
 
 
+@router.get("/posts/mine", response_model=PostsListResponse)
+async def list_my_posts(
+    limit: int = Query(20, ge=1, le=50, description="Number of posts to return"),
+    cursor: Optional[str] = Query(None, description="Pagination cursor"),
+    status: Optional[str] = Query(None, description="Filter by status: 'open' or 'resolved'"),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    List Care Club posts by the current user (my posts).
+    Same response shape and pagination as list_posts.
+    """
+    posts, total, has_more, next_cursor = await CareClubRepository.list_my_posts(
+        author_id=current_user["id"],
+        limit=limit,
+        cursor=cursor,
+        status=status,
+    )
+    posts = await EnrichmentService.enrich_posts(posts)
+    items = []
+    for p in posts:
+        items.append(PostListItem(
+            id=p["id"],
+            plant_id=p["plant_id"],
+            author_id=p["author_id"],
+            title=p["title"],
+            photo_urls=_to_read_urls(p.get("photo_urls", [])),
+            status=p["status"],
+            moderation_status=p.get("moderation_status", "active"),
+            created_at=p["created_at"],
+            last_activity_at=p["last_activity_at"],
+            aggregates=PostAggregates(**p.get("aggregates", {})),
+            author=AuthorInfo(**p["author"]) if p.get("author") else None,
+            plant=PlantInfo(**p["plant"]) if p.get("plant") else None,
+        ))
+    return PostsListResponse(
+        posts=items,
+        total=total,
+        has_more=has_more,
+        next_cursor=next_cursor,
+    )
+
+
 @router.get("/posts/{post_id}", response_model=PostResponse)
 async def get_post(
     post_id: str = Path(..., description="Post ID"),
