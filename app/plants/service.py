@@ -287,7 +287,8 @@ class PlantService:
         plant_doc["_id"] = result.inserted_id
 
         # ANALYSIS-002: Create an initial snapshot for the plant's cover image (append-only timeline).
-        if normalized_image_value and (normalized_image_value.startswith("plants/") or normalized_image_value.startswith("uploads/")):
+        # We store either an S3 key or an external URL in `image_url`; both should seed the timeline.
+        if normalized_image_value:
             try:
                 from app.plants.soil_logic import compute_soil_hint
 

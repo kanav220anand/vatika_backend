@@ -1,7 +1,8 @@
 """API routes for recommended plants."""
 
 from typing import Optional, Literal
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+from app.core.dependencies import get_current_user_optional
 from app.recommended_plants.service import RecommendedPlantsService
 from app.recommended_plants.schemas import RecommendedPlantsListResponse, RecommendedPlantResponse
 
@@ -13,10 +14,12 @@ async def get_recommended_plants(
     skip: int = Query(0, ge=0, description="Number of plants to skip"),
     limit: int = Query(10, ge=1, le=50, description="Max plants to return"),
     beginner_only: bool = Query(False, description="Only show beginner-friendly plants"),
+    wishlisted_only: bool = Query(False, description="Only show plants in the current user's wishlist"),
     difficulty: Optional[Literal["easy", "medium", "hard"]] = Query(None, description="Filter by difficulty level"),
     light_needs: Optional[Literal["low", "medium", "bright"]] = Query(None, description="Filter by light requirements"),
     sort_by: Optional[Literal["name", "difficulty", "popularity"]] = Query(None, description="Sort field"),
     sort_order: Optional[Literal["asc", "desc"]] = Query("asc", description="Sort order"),
+    current_user: Optional[dict] = Depends(get_current_user_optional),
 ):
     """
     Get paginated list of recommended plants with filters and sorting.
@@ -24,6 +27,7 @@ async def get_recommended_plants(
     - **skip**: Offset for pagination (default: 0)
     - **limit**: Max items per page (default: 10, max: 50)
     - **beginner_only**: Filter for beginner-friendly plants only
+    - **wishlisted_only**: Only show plants in the current user's wishlist (requires auth)
     - **difficulty**: Filter by difficulty (easy, medium, hard)
     - **light_needs**: Filter by light requirements (low, medium, bright)
     - **sort_by**: Sort by field (name, difficulty, popularity)
@@ -35,6 +39,8 @@ async def get_recommended_plants(
         skip=skip,
         limit=limit,
         beginner_only=beginner_only,
+        wishlisted_only=wishlisted_only,
+        user_id=current_user["id"] if current_user else None,
         difficulty=difficulty,
         light_needs=light_needs,
         sort_by=sort_by,

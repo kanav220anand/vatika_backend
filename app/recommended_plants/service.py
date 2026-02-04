@@ -3,6 +3,7 @@
 from typing import Optional, Literal
 from fastapi import HTTPException
 from app.core.database import Database
+from app.wishlist.service import WishlistService
 
 
 # Difficulty sort order mapping
@@ -23,6 +24,8 @@ class RecommendedPlantsService:
         skip: int = 0,
         limit: int = 10,
         beginner_only: bool = False,
+        wishlisted_only: bool = False,
+        user_id: Optional[str] = None,
         difficulty: Optional[Literal["easy", "medium", "hard"]] = None,
         light_needs: Optional[Literal["low", "medium", "bright"]] = None,
         sort_by: Optional[Literal["name", "difficulty", "popularity"]] = None,
@@ -40,6 +43,12 @@ class RecommendedPlantsService:
         filter_query = {}
         if beginner_only:
             filter_query["is_beginner_friendly"] = True
+        if wishlisted_only:
+            # Wishlist is user-specific; if not authenticated, return no results.
+            if not user_id:
+                return [], 0, False
+            plant_ids = await WishlistService.get_wishlist_plant_ids(user_id)
+            filter_query["plant_id"] = {"$in": list(plant_ids)}
         if difficulty:
             filter_query["difficulty"] = difficulty
         if light_needs:
