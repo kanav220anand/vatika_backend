@@ -667,6 +667,7 @@ async def get_plant_events(
 ):
     """Get recent plant events (water, photos, health checks)."""
     events = await EventService.get_user_events(user_id=current_user["id"], plant_id=plant_id, limit=limit)
+    logger.info(f"Retrieved {len(events)} events for plant {plant_id}, user {current_user['id']}")
     # Add signed URLs for any image keys stored in event metadata (handles older stored S3 URLs).
     s3 = S3Service()
     settings = get_settings()

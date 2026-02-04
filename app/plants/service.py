@@ -1,7 +1,10 @@
 """Plant service - handles plant CRUD and knowledge base operations."""
 
 import base64
+import logging
 from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
 from typing import Optional, List
 from uuid import uuid4
 from bson import ObjectId
@@ -667,8 +670,9 @@ class PlantService:
                     next_water_date_after=next_after,
                     metadata={"source": "user"},
                 )
-            except Exception:
-                pass
+                logger.info(f"Logged watering event for plant {plant_id}")
+            except Exception as e:
+                logger.error(f"Failed to log watering event for plant {plant_id}: {e}")
 
             # Update Today's plan (mark task completed) if it exists.
             try:
