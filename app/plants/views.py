@@ -694,6 +694,45 @@ async def get_plant_events(
     return {"events": events}
 
 
+# ==================== Debug Endpoint ====================
+
+
+@router.get("/{plant_id}/events-debug")
+async def debug_events(
+    plant_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """DEBUG: Raw events from database for a plant."""
+    from app.core.database import Database
+    collection = Database.get_collection("events")
+    
+    # Query directly
+    cursor = collection.find({"plant_id": plant_id}).sort("created_at", -1).limit(20)
+    
+    events_raw = []
+    async for doc in cursor:
+        events_raw.append({
+            "id": str(doc.get("_id")),
+            "event_type": doc.get("event_type"),
+            "plant_id": doc.get("plant_id"),
+            "user_id": doc.get("user_id"),
+            "created_at": str(doc.get("created_at")),
+            "occurred_at": str(doc.get("occurred_at")),
+        })
+    
+    # Also count total events for this user
+    total_user_events = await collection.count_documents({"user_id": current_user["id"]})
+    total_plant_events = await collection.count_documents({"plant_id": plant_id})
+    
+    return {
+        "plant_id": plant_id,
+        "user_id": current_user["id"],
+        "total_events_for_user": total_user_events,
+        "total_events_for_plant": total_plant_events,
+        "events_raw": events_raw,
+    }
+
+
 # ==================== Plant Journal Endpoints ====================
 
 
