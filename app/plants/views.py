@@ -42,7 +42,8 @@ from app.plants.today_service import TodayPlanService
 from app.plants.journal_service import JournalService
 from app.plants.openai_service import OpenAIService
 from app.plants.video_service import VideoService, ImageService, VideoProcessingError
-from app.core.s3_urls import presign_user_upload
+from app.core.s3_urls import presign_user_upload, normalize_s3_key
+from app.core.aws import S3Service
 from app.plants.events_service import EventService
 from app.ai.rate_limit import enforce_ai_limits
 from app.ai.security import validate_user_owned_s3_key, validate_base64_payload
