@@ -1,0 +1,36 @@
+[Unit]
+Description=Vatisha Celery Worker
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/vatisha/vatika_backend
+Environment="PATH=/home/ubuntu/vatisha/vatisha_env/bin:/usr/local/bin:/usr/bin:/bin"
+
+ExecStart=/home/ubuntu/vatisha/vatisha_env/bin/celery \
+    -A app.worker.celery_app.celery_app \
+    worker \
+    --loglevel=INFO \
+    --concurrency=2 \
+    --prefetch-multiplier=1
+
+# Graceful shutdown
+ExecStop=/bin/kill -s TERM $MAINPID
+KillMode=mixed
+TimeoutStopSec=30
+
+# Restart on failure
+Restart=on-failure
+RestartSec=10
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=celery-worker
+
+[Install]
+WantedBy=multi-user.target

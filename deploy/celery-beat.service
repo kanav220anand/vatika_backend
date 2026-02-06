@@ -1,0 +1,32 @@
+[Unit]
+Description=Vatisha Celery Beat Scheduler
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/vatisha/vatika_backend
+Environment="PATH=/home/ubuntu/vatisha/vatisha_env/bin:/usr/local/bin:/usr/bin:/bin"
+
+# Run celery beat with the DatabaseScheduler-free approach (uses code-defined schedule)
+ExecStart=/home/ubuntu/vatisha/vatisha_env/bin/celery \
+    -A app.worker.celery_app.celery_app \
+    beat \
+    --loglevel=INFO \
+    --pidfile=/tmp/celerybeat-vatisha.pid \
+    --schedule=/tmp/celerybeat-vatisha-schedule
+
+# Restart on failure
+Restart=on-failure
+RestartSec=10
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=celery-beat
+
+[Install]
+WantedBy=multi-user.target

@@ -148,12 +148,36 @@ Put the returned URL into `.env` as:
 celery -A app.worker.celery_app.celery_app worker --loglevel=INFO
 ```
 
-### Optional: run Celery Beat
+### 3) Run Celery Beat (required for scheduled notifications)
 
-Beat scheduling is not configured yet (scaffold only). If/when added, run a single beat instance:
+Beat runs scheduled tasks like daily water reminders (8 AM IST) and snoozed reminder processing (every 30 min):
 
 ```bash
 celery -A app.worker.celery_app.celery_app beat --loglevel=INFO
+```
+
+**Important:** Only run ONE beat instance across all servers. Multiple beats will cause duplicate tasks.
+
+### Production (systemd)
+
+Service files are in `deploy/`:
+
+```bash
+# Copy service files to systemd
+sudo cp deploy/celery-worker.service /etc/systemd/system/celery-worker.service
+sudo cp deploy/celery-beat.service /etc/systemd/system/celery-beat.service
+
+# Reload and start
+sudo systemctl daemon-reload
+sudo systemctl enable celery-worker celery-beat
+sudo systemctl start celery-worker celery-beat
+
+# Check status
+sudo systemctl status celery-worker celery-beat
+
+# View logs
+sudo journalctl -u celery-beat -f
+sudo journalctl -u celery-worker -f
 ```
 
 ### 3) Smoke test (ping job)
