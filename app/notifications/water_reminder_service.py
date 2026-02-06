@@ -260,6 +260,12 @@ class WaterReminderService:
             rec = compute_watering_recommendation(plant, now=now)
             
             if rec.urgency in {"due_today", "overdue"}:
+                # Only include plants with known watering history.
+                # Plants with guidance_type="check" have unknown last_watered
+                # and are handled separately as WATER_CHECK_SUMMARY notifications.
+                if rec.guidance_type == "check":
+                    continue
+                
                 # Check if reminder state is not paused
                 plant_id = str(plant["_id"])
                 reminder_state = await cls._get_reminder_state(user_id, plant_id)
