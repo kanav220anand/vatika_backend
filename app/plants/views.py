@@ -4,6 +4,7 @@ Debug logging for image URLs:
 Run with DEBUG=true and check logs for IMAGE_URL_DEBUG entries.
 """
 
+import asyncio
 import logging
 import time
 from typing import List, Optional
@@ -443,6 +444,15 @@ async def get_care_info(plant_id: str):
     return await PlantService.get_care_info(plant_id)
 
 
+async def _safe_resume_reminders(user_id: str, plant_id: str):
+    """Fire-and-forget: resume paused reminders when user opens a plant."""
+    try:
+        from app.notifications.water_reminder_service import WaterReminderService
+        await WaterReminderService.resume_reminders_for_plant(user_id, plant_id)
+    except Exception:
+        pass  # Never fail the plant detail request
+
+
 @router.get("/{plant_id}", response_model=PlantResponse)
 async def get_plant(
     plant_id: str,
@@ -450,6 +460,10 @@ async def get_plant(
 ):
     """Get a specific plant from your collection."""
     plant = await PlantService.get_plant_by_id(plant_id, current_user["id"])
+
+    # Resume paused reminders if user opens a plant they've been ignoring
+    asyncio.ensure_future(_safe_resume_reminders(current_user["id"], plant_id))
+
     return add_signed_url_to_plant(plant.dict() if hasattr(plant, 'dict') else dict(plant))
 
 
