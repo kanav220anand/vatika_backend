@@ -14,7 +14,6 @@ from app.notifications.models import (
     NotificationType,
     NotificationPriority,
 )
-from app.plants.watering_engine import compute_watering_recommendation
 
 
 class NotificationService:
@@ -179,14 +178,29 @@ class NotificationService:
     
     @classmethod
     async def mark_as_read(cls, notification_id: str, user_id: str) -> NotificationResponse:
-        """Mark a notification as read."""
+        """Mark a notification as read and update state to 'opened'."""
         collection = cls._get_collection()
         object_id = cls._validate_object_id(notification_id)
         
+        # Only advance state to "opened" if currently in "sent" or "delivered".
+        # Don't overwrite "actioned", "snoozed", etc.
         result = await collection.find_one_and_update(
             {"_id": object_id, "user_id": user_id},
-            {"$set": {"is_read": True}},
-            return_document=True
+            [
+                {
+                    "$set": {
+                        "is_read": True,
+                        "state": {
+                            "$cond": {
+                                "if": {"$in": [{"$ifNull": ["$state", "sent"]}, ["sent", "delivered"]]},
+                                "then": "opened",
+                                "else": "$state",
+                            }
+                        },
+                    }
+                }
+            ],
+            return_document=True,
         )
         
         if not result:
@@ -196,12 +210,26 @@ class NotificationService:
     
     @classmethod
     async def mark_all_as_read(cls, user_id: str) -> int:
-        """Mark all user's notifications as read. Returns count updated."""
+        """Mark all user's notifications as read and update state where appropriate."""
         collection = cls._get_collection()
         
+        # Set is_read and advance state to "opened" only for sent/delivered
         result = await collection.update_many(
             {"user_id": user_id, "is_read": False},
-            {"$set": {"is_read": True}}
+            [
+                {
+                    "$set": {
+                        "is_read": True,
+                        "state": {
+                            "$cond": {
+                                "if": {"$in": [{"$ifNull": ["$state", "sent"]}, ["sent", "delivered"]]},
+                                "then": "opened",
+                                "else": "$state",
+                            }
+                        },
+                    }
+                }
+            ],
         )
         
         return result.modified_count
@@ -266,61 +294,6 @@ class NotificationService:
         ))
     
     @classmethod
-    async def generate_water_reminder(
-        cls,
-        user_id: str,
-        plant_id: str,
-        plant_name: str,
-        days_since_watered: int
-    ) -> Optional[NotificationResponse]:
-        """Generate a watering reminder notification."""
-        # Check if similar notification already exists (within last 12h)
-        collection = cls._get_collection()
-        recent = await collection.find_one({
-            "user_id": user_id,
-            "plant_id": plant_id,
-            "notification_type": NotificationType.WATER_REMINDER.value,
-            "created_at": {"$gte": datetime.utcnow() - timedelta(hours=12)}
-        })
-        
-        if recent:
-            return None
-        
-        priority = NotificationPriority.HIGH if days_since_watered > 7 else NotificationPriority.MEDIUM
-        
-        return await cls.create_notification(NotificationCreate(
-            user_id=user_id,
-            notification_type=NotificationType.WATER_REMINDER,
-            priority=priority,
-            title=f"💧 Time to water {plant_name}",
-            message=f"It's been {days_since_watered} days since you last watered this plant.",
-            plant_id=plant_id,
-            action_url=f"/plants/{plant_id}"
-        ))
-    
-    @classmethod
-    async def generate_action_notification(
-        cls,
-        user_id: str,
-        plant_id: str,
-        plant_name: str,
-        actions: List[str]
-    ) -> Optional[NotificationResponse]:
-        """Generate an action required notification from plant analysis."""
-        if not actions:
-            return None
-        
-        return await cls.create_notification(NotificationCreate(
-            user_id=user_id,
-            notification_type=NotificationType.ACTION_REQUIRED,
-            priority=NotificationPriority.HIGH,
-            title=f"⚡ Action needed for {plant_name}",
-            message=actions[0] if len(actions) == 1 else f"{actions[0]} (+{len(actions)-1} more)",
-            plant_id=plant_id,
-            action_url=f"/plants/{plant_id}"
-        ))
-
-    @classmethod
     async def generate_weather_alert(
         cls,
         user_id: str,
@@ -380,128 +353,6 @@ class NotificationService:
             )
         except Exception:
             return None
-    
-    @classmethod
-    async def check_watering_reminders(cls, user_id: str) -> List[NotificationResponse]:
-        """
-        Check all user's plants and generate watering reminders if needed.
-        Called periodically or when user opens the app.
-        """
-        # Respect global user preference.
-        try:
-            user = await Database.get_collection("users").find_one({"_id": ObjectId(user_id)}, {"notifications_enabled": 1})
-            if user and user.get("notifications_enabled") is False:
-                return []
-        except Exception:
-            # If the user lookup fails, don't block reminders.
-            pass
-
-        plants_collection = cls._get_plants_collection()
-        notifications = []
-        
-        now = datetime.utcnow()
-        date_key = now.strftime("%Y-%m-%d")
-
-        async def gather_actionable_plants() -> dict:
-            """
-            Action bucket hook for future signals (soil, etc.) without changing notification UX.
-
-            Returns:
-              - water_reminder_plants: list[dict] (schedule-based due/overdue)
-              - unknown_history_plants: list[dict] (need "check soil" baseline)
-              - soil_action_plants: list[dict] (placeholder for future soil hint integration)
-            """
-            buckets = {"water_reminder_plants": [], "unknown_history_plants": [], "soil_action_plants": []}
-
-            cursor = plants_collection.find({"user_id": user_id, "reminders_enabled": {"$ne": False}})
-            async for plant in cursor:
-                last_watered = plant.get("last_watered")
-                last_source = (plant.get("last_watered_source") or "").strip() or None
-                unknown_history = last_watered is None and (last_source in (None, "unknown"))
-
-                if unknown_history:
-                    buckets["unknown_history_plants"].append(plant)
-                    continue
-
-                rec = compute_watering_recommendation(plant, now=now)
-                if rec.urgency in {"due_today", "overdue"}:
-                    # Attach rec so we don't recompute.
-                    plant["_water_rec"] = rec
-                    buckets["water_reminder_plants"].append(plant)
-
-            return buckets
-
-        buckets = await gather_actionable_plants()
-
-        # A) Schedule-based per-plant reminders (due_today/overdue), once per plant per day.
-        for plant in buckets["water_reminder_plants"]:
-            plant_id = str(plant["_id"])
-            plant_name = plant.get("nickname") or plant.get("common_name") or "Your plant"
-            rec = plant.get("_water_rec") or compute_watering_recommendation(plant, now=now)
-
-            dedupe_key = f"water_reminder:{user_id}:{plant_id}:{date_key}"
-            notification = await cls.create_notification_deduped(
-                NotificationCreate(
-                    user_id=user_id,
-                    notification_type=NotificationType.WATER_REMINDER,
-                    priority=NotificationPriority.HIGH if rec.urgency == "overdue" else NotificationPriority.MEDIUM,
-                    title="Time to water",
-                    message=f"{plant_name}: {rec.recommended_action}. Remember to mark it as watered.",
-                    plant_id=plant_id,
-                    action_url=f"/plants/{plant_id}",
-                    dedupe_key=dedupe_key,
-                    metadata={
-                        "plant_id": plant_id,
-                        "urgency": rec.urgency,
-                        "next_water_date": rec.next_water_date.isoformat() if rec.next_water_date else None,
-                        "days_until_due": rec.days_until_due,
-                    },
-                )
-            )
-            if notification:
-                notifications.append(notification)
-
-        # B) Unknown last-watered reminders: one daily summary per user (no per-plant spam).
-        unknown_plants = buckets["unknown_history_plants"]
-        unknown_count = len(unknown_plants)
-        if unknown_count > 0:
-            plant_ids = [str(p["_id"]) for p in unknown_plants]
-            sample_names = [
-                (p.get("nickname") or p.get("common_name") or "Plant").strip()
-                for p in unknown_plants[:3]
-            ]
-            title = "Check soil for your plants"
-            if unknown_count == 1:
-                body = "Check soil for 1 plant today. Water only if dry — and remember to mark it as watered."
-            else:
-                body = f"Check soil for {unknown_count} plants today. Water only if dry — and remember to mark them as watered."
-
-            dedupe_key = f"water_check_summary:{user_id}:{date_key}"
-            primary_plant_id = plant_ids[0] if plant_ids else None
-            notification = await cls.create_notification_deduped(
-                NotificationCreate(
-                    user_id=user_id,
-                    notification_type=NotificationType.WATER_CHECK_SUMMARY,
-                    priority=NotificationPriority.MEDIUM,
-                    title=title,
-                    message=body,
-                    # Optional compatibility: set a primary plant id for older clients that expect one.
-                    plant_id=primary_plant_id,
-                    action_url="/garden",
-                    dedupe_key=dedupe_key,
-                    metadata={
-                        "count": unknown_count,
-                        "plant_ids": plant_ids,
-                        "sample_names": sample_names[:3],
-                        "primary_plant_id": primary_plant_id,
-                        "action_bucket": "unknown_history",
-                    },
-                )
-            )
-            if notification:
-                notifications.append(notification)
-        
-        return notifications
     
     # ==================== Helpers ====================
     
