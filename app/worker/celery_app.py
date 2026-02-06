@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from celery import Celery
+from celery.schedules import crontab
 
 from app.core.config import get_settings
 
@@ -53,3 +54,28 @@ if settings.CELERY_TASK_TIME_LIMIT:
     celery_app.conf.task_time_limit = int(settings.CELERY_TASK_TIME_LIMIT)
 if settings.CELERY_TASK_SOFT_TIME_LIMIT:
     celery_app.conf.task_soft_time_limit = int(settings.CELERY_TASK_SOFT_TIME_LIMIT)
+
+
+# =============================================================================
+# Celery Beat Schedule - Periodic Tasks
+# =============================================================================
+
+# Water reminder hour in IST (default 8 AM)
+# Convert to UTC: 8 AM IST = 2:30 AM UTC
+WATER_REMINDER_HOUR_UTC = 2
+WATER_REMINDER_MINUTE_UTC = 30
+
+celery_app.conf.beat_schedule = {
+    # Daily water reminders at 8 AM IST (2:30 AM UTC)
+    "generate-daily-water-reminders": {
+        "task": "app.worker.tasks.generate_daily_water_reminders",
+        "schedule": crontab(hour=WATER_REMINDER_HOUR_UTC, minute=WATER_REMINDER_MINUTE_UTC),
+        "options": {"queue": DEFAULT_QUEUE},
+    },
+    # Process snoozed reminders every 30 minutes
+    "process-snoozed-reminders": {
+        "task": "app.worker.tasks.process_snoozed_reminders",
+        "schedule": crontab(minute="*/30"),
+        "options": {"queue": DEFAULT_QUEUE},
+    },
+}

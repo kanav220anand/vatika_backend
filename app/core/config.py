@@ -62,6 +62,15 @@ class Settings(BaseSettings):
     AWS_SNS_PLATFORM_APPLICATION_ARN_IOS: str = ""
     AWS_SNS_PLATFORM_APPLICATION_ARN_IOS_SANDBOX: str = ""
     AWS_SNS_PLATFORM_APPLICATION_ARN_ANDROID: str = ""
+    
+    # Simplified SNS platform ARN aliases (used by push_service.py)
+    @property
+    def AWS_SNS_PLATFORM_ARN_IOS(self) -> str:
+        return self.AWS_SNS_PLATFORM_APPLICATION_ARN_IOS or self.AWS_SNS_PLATFORM_APPLICATION_ARN_IOS_SANDBOX
+    
+    @property
+    def AWS_SNS_PLATFORM_ARN_ANDROID(self) -> str:
+        return self.AWS_SNS_PLATFORM_APPLICATION_ARN_ANDROID
 
     # Public assets base URL (e.g. https://vatika-assets-prod.s3.us-east-1.amazonaws.com/)
     S3_BASE_URL: str = ""
@@ -105,6 +114,18 @@ class Settings(BaseSettings):
     # Web reset page base URL (for email links)
     WEB_RESET_PASSWORD_URL: str = "https://api.vatisha.com/static/reset-password.html"
     # Can be overridden with S3 URL in production
+
+    # ------------------------------------------------------------------
+    # NOTIFICATIONS: Water reminders, push notifications, etc.
+    # ------------------------------------------------------------------
+    # Vatisha logo URL for notification images (S3 URL)
+    VATISHA_NOTIFICATION_LOGO_URL: str = ""
+    
+    # Water reminder settings
+    WATER_REMINDER_HOUR_IST: int = 8  # Hour to send reminders (IST timezone)
+    WATER_REMINDER_MAX_DAYS: int = 5  # Stop push after this many days of ignoring
+    WATER_REMINDER_SNOOZE_HOURS: int = 4  # Default snooze duration
+    WATER_REMINDER_BATCH_CAP: int = 5  # Max plants to mention in batched message ("and 5+ others")
 
     # ------------------------------------------------------------------
     # INFRA-001 / JOBS-001: Celery (SQS broker) + Mongo jobs store

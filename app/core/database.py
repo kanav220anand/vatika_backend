@@ -209,6 +209,25 @@ class Database:
         await cls.db.weather_forecast_cache.create_index("city_key", unique=True)
         await cls.db.weather_forecast_cache.create_index([("fetched_at", -1)])
 
+        # Water reminder state tracking (per-plant reminder escalation)
+        await cls.db.water_reminder_state.create_index(
+            [("user_id", 1), ("plant_id", 1)],
+            unique=True
+        )
+        await cls.db.water_reminder_state.create_index([("user_id", 1), ("consecutive_days", 1)])
+        await cls.db.water_reminder_state.create_index("last_reminder_date")
+
+        # Device tokens for push notifications
+        await cls.db.device_tokens.create_index(
+            [("user_id", 1), ("device_token", 1)],
+            unique=True
+        )
+        await cls.db.device_tokens.create_index([("user_id", 1), ("is_active", 1)])
+        await cls.db.device_tokens.create_index("endpoint_arn")
+
+        # Notification state tracking - add indexes for snoozed reminders
+        await cls.db.notifications.create_index([("state", 1), ("snoozed_until", 1)])
+
     @classmethod
     async def _ensure_internal_master_docs(cls):
         """Seed/ensure internal master data documents exist."""
